@@ -1,0 +1,52 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color: #17201b;
+  background: #f8f7f2;
+  font-family: "Noto Sans Thai", "Leelawadee UI", "Segoe UI", sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.table-shell {
+  overflow: hidden;
+  border: 1px solid rgb(220 225 216);
+  background: white;
+  border-radius: 8px;
+}
+
+.field {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid rgb(205 213 204);
+  background: white;
+  padding: 0.7rem 0.85rem;
+  outline: none;
+}
+
+.field-with-left-icon {
+  padding-left: 2.5rem;
+}
+
+.field-with-both-icons {
+  padding-left: 2.5rem;
+  padding-right: 2.75rem;
+}
+
+.field:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}

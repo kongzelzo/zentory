@@ -1,10 +1,20 @@
 export type ProductStatus = "ACTIVE" | "PAUSED" | "DISCONTINUED" | "ARCHIVED";
 
+export type ProductBalance = {
+  warehouseId?: string;
+  quantity: number;
+  branch?: { name: string } | null;
+  warehouse?: { id?: string; name: string; branch?: { name: string } | null } | null;
+};
+
 export type ProductForSummary = {
   id: string;
   name: string;
   sku: string;
   barcode?: string;
+  variantColor?: string | null;
+  variantSize?: string | null;
+  productGroup?: { id: string; name: string; skuPrefix?: string } | null;
   imagePath?: string | null;
   unit: string;
   costPrice: string | number;
@@ -13,7 +23,7 @@ export type ProductForSummary = {
   status: ProductStatus;
   category?: { name: string };
   brand?: { name: string };
-  balances: Array<{ quantity: number }>;
+  balances: ProductBalance[];
 };
 
 const apiBaseUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
@@ -51,6 +61,37 @@ export const PRODUCT_STATUS_LABELS: Record<ProductStatus, ProductBadge> = {
 
 export function stockOf(product: Pick<ProductForSummary, "balances">) {
   return product.balances.reduce((sum, balance) => sum + balance.quantity, 0);
+}
+
+export function balanceMatchesWarehouse(balance: ProductBalance, warehouseId: string) {
+  return balance.warehouseId === warehouseId || balance.warehouse?.id === warehouseId;
+}
+
+export function stockInWarehouse(product: Pick<ProductForSummary, "balances">, warehouseId: string) {
+  return product.balances
+    .filter((balance) => balanceMatchesWarehouse(balance, warehouseId))
+    .reduce((sum, balance) => sum + balance.quantity, 0);
+}
+
+export function getBalanceWarehouseName(balance: ProductBalance) {
+  return balance.warehouse?.name?.trim() || balance.branch?.name?.trim() || "คลังหลัก";
+}
+
+export function getProductStockLocationSummary(product: Pick<ProductForSummary, "balances" | "unit">, maxLocations = 2) {
+  const stockedBalances = product.balances.filter((balance) => balance.quantity > 0);
+  if (stockedBalances.length === 0) return "ยังไม่มีในคลัง";
+
+  const visibleBalances = stockedBalances.slice(0, maxLocations);
+  const summary = visibleBalances
+    .map((balance) => `${getBalanceWarehouseName(balance)} ${balance.quantity.toLocaleString("th-TH")} ${product.unit}`)
+    .join(", ");
+  const hiddenCount = stockedBalances.length - visibleBalances.length;
+  return hiddenCount > 0 ? `${summary} + อีก ${hiddenCount.toLocaleString("th-TH")} คลัง` : summary;
+}
+
+export function getProductDisplayName(product: Pick<ProductForSummary, "name" | "variantColor" | "variantSize">) {
+  const options = [product.variantColor, product.variantSize].map((value) => value?.trim()).filter(Boolean);
+  return options.length > 0 ? `${product.name} / ${options.join(" / ")}` : product.name;
 }
 
 export function countsTowardProductLimit(product: ProductForSummary) {
@@ -123,9 +164,13 @@ export function getProductSummary(products: ProductForSummary[]) {
 export function matchesProductSearch(product: ProductForSummary, query: string) {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return true;
-  return [product.name, product.sku, product.barcode, product.category?.name, product.brand?.name]
+  return [product.name, product.variantColor, product.variantSize, product.sku, product.barcode, product.category?.name, product.brand?.name]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(normalizedQuery));
+}
+
+export function getProductReceiptHref(productId: string) {
+  return `/app/inventory/receipts?productId=${encodeURIComponent(productId)}`;
 }
 
 export function getProductImageUrl(product: Pick<ProductForSummary, "imagePath">) {

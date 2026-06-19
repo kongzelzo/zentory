@@ -1,0 +1,2 @@
+-- No-op migration: branch manager role and branch assignments are already covered by
+-- 20260617000300_branch_manager_role and 20260617000200_member_branch_assignments.

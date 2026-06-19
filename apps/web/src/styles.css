@@ -22,10 +22,11 @@ textarea {
 }
 
 .table-shell {
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid rgb(220 225 216);
   background: white;
   border-radius: 8px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .field {
@@ -44,6 +45,26 @@ textarea {
 .field-with-both-icons {
   padding-left: 2.5rem;
   padding-right: 2.75rem;
+}
+
+.field-with-select-icons {
+  padding-left: 3.75rem;
+  padding-right: 3rem;
+}
+
+.field-icon-wrap {
+  position: relative;
+  display: block;
+}
+
+.field-icon {
+  position: absolute;
+  left: 0.85rem;
+  top: 50%;
+  z-index: 1;
+  color: rgb(120 113 108);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .field:focus {

@@ -1,5 +1,6 @@
 export type BranchRecord = {
   id: string;
+  branchId?: string;
   name: string;
   code: string;
   type: BranchType;
@@ -9,9 +10,15 @@ export type BranchRecord = {
   contactPhone?: string | null;
   note?: string | null;
   isDefault?: boolean;
+  branch?: {
+    id: string;
+    name: string;
+    code: string;
+    status: BranchStatus;
+  };
 };
 
-export type BranchType = "MAIN_WAREHOUSE" | "STORE_FRONT" | "BRANCH" | "SECONDARY_WAREHOUSE";
+export type BranchType = "MAIN_WAREHOUSE" | "STORE_FRONT" | "BRANCH_WAREHOUSE" | "SECONDARY_WAREHOUSE";
 export type BranchStatus = "ACTIVE" | "INACTIVE";
 
 export type BranchProductRecord = {
@@ -24,7 +31,7 @@ export type BranchProductRecord = {
 };
 
 export type BranchBalanceRecord = {
-  branchId?: string;
+  warehouseId?: string;
   quantity: number;
   product: BranchProductRecord;
 };
@@ -48,7 +55,7 @@ export function branchTypeLabel(branch: BranchRecord) {
   const labels: Record<BranchType, string> = {
     MAIN_WAREHOUSE: "คลังหลัก",
     STORE_FRONT: "หน้าร้าน",
-    BRANCH: "สาขา",
+    BRANCH_WAREHOUSE: "คลังประจำสาขา",
     SECONDARY_WAREHOUSE: "คลังสำรอง"
   };
   return labels[branch.type] ?? "สาขา/คลัง";
@@ -60,7 +67,7 @@ export function branchStatusLabel(branch: BranchRecord) {
 
 export function buildBranchSummaries(branches: BranchRecord[], balances: BranchBalanceRecord[]): BranchSummary[] {
   return branches.map((branch) => {
-    const branchBalances = balances.filter((balance) => balance.branchId === branch.id);
+    const branchBalances = balances.filter((balance) => balance.warehouseId === branch.id);
     return {
       ...branch,
       code: branchCode(branch),

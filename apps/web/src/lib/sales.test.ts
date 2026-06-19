@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getPaymentMethodLabel, getReceiptSummary, type SaleForReceipt } from "./sales";
+import { buildSalesQuery, getPaymentMethodLabel, getReceiptSummary, getSalesDateRange, type SaleForReceipt } from "./sales";
 
 const sale: SaleForReceipt = {
   id: "sale-1",
@@ -40,5 +40,16 @@ describe("sales helpers", () => {
     expect(getPaymentMethodLabel("CASH")).toBe("เงินสด");
     expect(getPaymentMethodLabel("TRANSFER")).toBe("โอนเงิน");
     expect(getPaymentMethodLabel(undefined)).toBe("เงินสด");
+  });
+
+  it("builds server-side sales query params with pagination and trimmed search", () => {
+    expect(buildSalesQuery({ page: 2, limit: 50, search: " SALE-001 ", dateFilter: "all" })).toBe("page=2&limit=50&q=SALE-001");
+  });
+
+  it("derives inclusive date ranges for preset filters", () => {
+    expect(getSalesDateRange("7d", new Date("2026-06-14T15:30:00.000Z"))).toEqual({
+      dateFrom: "2026-06-07T17:00:00.000Z",
+      dateTo: "2026-06-14T16:59:59.999Z"
+    });
   });
 });

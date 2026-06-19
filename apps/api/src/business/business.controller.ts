@@ -1,8 +1,8 @@
 import { Body, Controller, Get, Patch, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
-import { BusinessDto } from "../common/dto";
-import { MinRoleGuard } from "../common/roles.guard";
+import { BusinessDto, DashboardGoalsDto } from "../common/dto";
+import { PermissionGuard } from "../common/roles.guard";
 import { ZentoryService } from "../zentory.service";
 
 @Controller("businesses")
@@ -16,8 +16,14 @@ export class BusinessController {
   }
 
   @Patch("current")
-  @UseGuards(MinRoleGuard("OWNER"))
+  @UseGuards(PermissionGuard("business.update"))
   update(@CurrentUser() user: CurrentUser, @Body() dto: Partial<BusinessDto>) {
     return this.service.updateBusiness(user, dto);
+  }
+
+  @Patch("dashboard-goals")
+  @UseGuards(PermissionGuard("business.update"))
+  updateDashboardGoals(@CurrentUser() user: CurrentUser, @Body() dto: DashboardGoalsDto) {
+    return this.service.updateDashboardGoals(user, dto);
   }
 }

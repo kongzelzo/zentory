@@ -10,6 +10,7 @@ datasource db {
 enum RoleName {
   OWNER
   MANAGER
+  BRANCH_MANAGER
   CASHIER
   STOCK_STAFF
   VIEWER
@@ -17,7 +18,8 @@ enum RoleName {
 
 enum MemberStatus {
   ACTIVE
-  INVITED
+  PENDING
+  REJECTED
   DISABLED
 }
 
@@ -33,6 +35,15 @@ enum MovementType {
   ADJUSTMENT_IN
   ADJUSTMENT_OUT
   SALE_OUT
+  TRANSFER_OUT
+  TRANSFER_IN
+  TRANSFER_CANCEL
+}
+
+enum AdjustmentMode {
+  SET_ACTUAL
+  INCREASE
+  DECREASE
 }
 
 enum PaymentMethod {
@@ -51,10 +62,29 @@ enum SubscriptionStatus {
   SUSPENDED
 }
 
-enum BranchType {
+enum SubscriptionPaymentMode {
+  FREE
+  STRIPE_SUBSCRIPTION
+  PROMPTPAY_ONE_TIME
+}
+
+enum AccountPaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  CANCELED
+}
+
+enum SalesTargetMode {
+  ANNUAL
+  MONTHLY
+  DAILY
+}
+
+enum WarehouseType {
   MAIN_WAREHOUSE
   STORE_FRONT
-  BRANCH
+  BRANCH_WAREHOUSE
   SECONDARY_WAREHOUSE
 }
 
@@ -63,12 +93,50 @@ enum BranchStatus {
   INACTIVE
 }
 
+enum WarehouseStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum StockTransferStatus {
+  REQUESTED
+  SOURCE_APPROVED
+  IN_TRANSIT
+  RECEIVED
+  SOURCE_REJECTED
+  CANCELED
+}
+
+enum StockCountStatus {
+  COUNTING
+  REVIEW
+  APPLIED
+  CANCELED
+}
+
+enum NotificationType {
+  STAFF_REQUEST
+  TRANSFER_REQUEST
+  TRANSFER_STATUS
+  STOCK_ALERT
+  STOCK_COUNT
+  SYSTEM
+}
+
+enum NotificationSeverity {
+  INFO
+  SUCCESS
+  WARNING
+  CRITICAL
+}
+
 model User {
   id             String           @id @default(cuid())
   email          String           @unique
   name           String
   phone          String?
-  passwordHash   String
+  passwordHash   String?
+  googleSub      String?          @unique
   refreshHash    String?
   passwordResetTokenHash String?
   passwordResetExpiresAt DateTime?
@@ -78,7 +146,17 @@ model User {
   memberships    BusinessMember[]
   sales          Sale[]
   stockMovements StockMovement[]
+  createdTransfers StockTransfer[] @relation("CreatedTransfers")
+  requestedTransfers StockTransfer[] @relation("RequestedTransfers")
+  sourceApprovedTransfers StockTransfer[] @relation("SourceApprovedTransfers")
+  sourceRejectedTransfers StockTransfer[] @relation("SourceRejectedTransfers")
+  destinationConfirmedTransfers StockTransfer[] @relation("DestinationConfirmedTransfers")
+  receivedTransfers StockTransfer[] @relation("ReceivedTransfers")
+  canceledTransfers StockTransfer[] @relation("CanceledTransfers")
   auditLogs      AuditLog[]
+  stockCounts    StockCount[]
+  notificationRecipients NotificationRecipient[]
+  accountPayments AccountPaymentRequest[]
 
   @@index([passwordResetTokenHash])
 }
@@ -89,38 +167,78 @@ model Business {
   province       String?
   businessType   String?
   branchCount    String                 @default("1")
+  address        String?
+  phone          String?
+  email          String?
+  taxId          String?
+  logoUrl        String?
+  receiptFooter  String?
   onboardingCompleted Boolean           @default(false)
   onboardingProgress  Json              @default("{}")
   currency       String                 @default("THB")
   taxRate        Decimal                @default(0)
+  salesTargetMode SalesTargetMode       @default(ANNUAL)
+  annualSalesTarget Decimal?
+  dailySalesTarget Decimal?
+  monthlySalesTarget Decimal?
   createdAt      DateTime               @default(now())
   updatedAt      DateTime               @updatedAt
   members        BusinessMember[]
   branches       Branch[]
+  warehouses     Warehouse[]
   categories     Category[]
   brands         Brand[]
+  productGroups  ProductGroup[]
   products       Product[]
+  productBranchStatuses ProductBranchStatus[]
   balances       InventoryBalance[]
   movements      StockMovement[]
   sales          Sale[]
   receipts       StockReceipt[]
   adjustments    StockAdjustment[]
+  transfers      StockTransfer[]
+  stockCounts    StockCount[]
   subscription   BusinessSubscription?
+  accountPayments AccountPaymentRequest[]
   auditLogs      AuditLog[]
+  notifications  Notification[]
 }
 
 model BusinessMember {
   id         String       @id @default(cuid())
   businessId String
-  userId     String
+  userId     String?
+  employeeName String?
+  employeePhone String?
+  preferredRole String?
+  preferredBranch String?
+  requestedBranchId String?
+  availableStartDate DateTime?
+  applicationNote String?
   role       RoleName
   status     MemberStatus @default(ACTIVE)
+  permissionOverrides Json @default("{}")
   createdAt  DateTime     @default(now())
   business   Business     @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  user       User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestedBranch Branch? @relation("RequestedMemberBranch", fields: [requestedBranchId], references: [id], onDelete: SetNull)
+  branchAssignments BusinessMemberBranch[]
 
   @@unique([businessId, userId])
   @@index([businessId, role])
+  @@index([requestedBranchId])
+}
+
+model BusinessMemberBranch {
+  id               String         @id @default(cuid())
+  businessMemberId String
+  branchId         String
+  createdAt        DateTime       @default(now())
+  member           BusinessMember @relation(fields: [businessMemberId], references: [id], onDelete: Cascade)
+  branch           Branch         @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([businessMemberId, branchId])
+  @@index([branchId])
 }
 
 model Branch {
@@ -128,7 +246,6 @@ model Branch {
   businessId String
   name       String
   code       String
-  type       BranchType         @default(BRANCH)
   status     BranchStatus       @default(ACTIVE)
   address    String?
   contactName String?
@@ -137,11 +254,44 @@ model Branch {
   isDefault  Boolean            @default(false)
   createdAt  DateTime           @default(now())
   business   Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  warehouses Warehouse[]
+  productStatuses ProductBranchStatus[]
+  sales      Sale[]
+  memberAssignments BusinessMemberBranch[]
+  requestedMemberApplications BusinessMember[] @relation("RequestedMemberBranch")
+  notifications Notification[]
+
+  @@index([businessId])
+  @@unique([businessId, code])
+}
+
+model Warehouse {
+  id         String             @id @default(cuid())
+  businessId String
+  branchId   String
+  name       String
+  code       String
+  type       WarehouseType      @default(BRANCH_WAREHOUSE)
+  status     WarehouseStatus    @default(ACTIVE)
+  address    String?
+  contactName String?
+  contactPhone String?
+  note       String?
+  isDefault  Boolean            @default(false)
+  createdAt  DateTime           @default(now())
+  business   Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branch     Branch             @relation(fields: [branchId], references: [id])
   balances   InventoryBalance[]
   movements  StockMovement[]
+  receipts   StockReceipt[]
+  adjustments StockAdjustment[]
+  stockCounts StockCount[]
+  sourceTransfers StockTransfer[] @relation("SourceWarehouseTransfers")
+  destinationTransfers StockTransfer[] @relation("DestinationWarehouseTransfers")
   sales      Sale[]
 
   @@index([businessId])
+  @@index([branchId])
   @@unique([businessId, code])
 }
 
@@ -152,6 +302,7 @@ model Category {
   color      String    @default("#2563eb")
   createdAt  DateTime  @default(now())
   business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productGroups ProductGroup[]
   products   Product[]
 
   @@unique([businessId, name])
@@ -164,19 +315,43 @@ model Brand {
   createdAt  DateTime  @default(now())
   business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
   products   Product[]
+  productGroups ProductGroup[]
 
   @@unique([businessId, name])
+}
+
+model ProductGroup {
+  id          String    @id @default(cuid())
+  businessId  String
+  categoryId  String?
+  brandId     String?
+  name        String
+  skuPrefix   String
+  description String?
+  unit        String    @default("ชิ้น")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category    Category? @relation(fields: [categoryId], references: [id])
+  brand       Brand?    @relation(fields: [brandId], references: [id])
+  products    Product[]
+
+  @@index([businessId, name])
+  @@index([businessId, skuPrefix])
 }
 
 model Product {
   id          String             @id @default(cuid())
   businessId  String
+  productGroupId String?
   categoryId  String?
   brandId     String?
   sku         String
   barcode     String?
   name        String
   description String?
+  variantColor String?
+  variantSize  String?
   imagePath   String?
   unit        String             @default("ชิ้น")
   costPrice   Decimal
@@ -186,36 +361,60 @@ model Product {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
   business    Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  productGroup ProductGroup?      @relation(fields: [productGroupId], references: [id], onDelete: SetNull)
   category    Category?          @relation(fields: [categoryId], references: [id])
   brand       Brand?             @relation(fields: [brandId], references: [id])
   balances    InventoryBalance[]
   movements   StockMovement[]
   saleItems   SaleItem[]
+  transferItems StockTransferItem[]
+  stockCountItems StockCountItem[]
+  branchStatuses ProductBranchStatus[]
 
   @@unique([businessId, sku])
   @@unique([businessId, barcode])
   @@index([businessId, name])
+  @@index([productGroupId])
+  @@index([businessId, variantColor])
+  @@index([businessId, variantSize])
+}
+
+model ProductBranchStatus {
+  id         String        @id @default(cuid())
+  businessId String
+  productId  String
+  branchId   String
+  status     ProductStatus @default(ACTIVE)
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  business   Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  product    Product       @relation(fields: [productId], references: [id], onDelete: Cascade)
+  branch     Branch        @relation(fields: [branchId], references: [id], onDelete: Cascade)
+
+  @@unique([businessId, productId, branchId])
+  @@index([businessId, branchId, status])
+  @@index([productId])
 }
 
 model InventoryBalance {
   id         String   @id @default(cuid())
   businessId String
-  branchId   String
+  warehouseId String
   productId  String
   quantity   Int      @default(0)
   updatedAt  DateTime @updatedAt
   business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  branch     Branch   @relation(fields: [branchId], references: [id], onDelete: Cascade)
+  warehouse  Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
   product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
 
-  @@unique([businessId, branchId, productId])
+  @@unique([businessId, warehouseId, productId])
   @@index([businessId, quantity])
 }
 
 model StockMovement {
   id           String        @id @default(cuid())
   businessId   String
-  branchId     String
+  warehouseId  String
   productId    String
   userId       String
   type         MovementType
@@ -224,10 +423,12 @@ model StockMovement {
   balanceAfter Int
   unitCost     Decimal?
   reason       String?
+  adjustmentMode AdjustmentMode?
+  targetQuantity Int?
   reference    String?
   createdAt    DateTime      @default(now())
   business     Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  branch       Branch        @relation(fields: [branchId], references: [id])
+  warehouse    Warehouse     @relation(fields: [warehouseId], references: [id])
   product      Product       @relation(fields: [productId], references: [id])
   user         User          @relation(fields: [userId], references: [id])
 
@@ -237,7 +438,7 @@ model StockMovement {
 model StockReceipt {
   id          String   @id @default(cuid())
   businessId  String
-  branchId    String
+  warehouseId String
   userId      String
   documentNo  String
   supplier    String?
@@ -245,6 +446,7 @@ model StockReceipt {
   note        String?
   createdAt   DateTime @default(now())
   business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
 
   @@unique([businessId, documentNo])
 }
@@ -252,20 +454,112 @@ model StockReceipt {
 model StockAdjustment {
   id          String   @id @default(cuid())
   businessId  String
-  branchId    String
+  warehouseId String
   userId      String
   documentNo  String
   reason      String
+  adjustmentMode AdjustmentMode?
+  targetQuantity Int?
   createdAt   DateTime @default(now())
   business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
 
   @@unique([businessId, documentNo])
+}
+
+model StockCount {
+  id          String           @id @default(cuid())
+  businessId  String
+  warehouseId String
+  userId      String
+  documentNo  String
+  status      StockCountStatus @default(COUNTING)
+  note        String?
+  startedAt   DateTime         @default(now())
+  completedAt DateTime?
+  appliedAt   DateTime?
+  business    Business         @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  warehouse   Warehouse        @relation(fields: [warehouseId], references: [id])
+  user        User             @relation(fields: [userId], references: [id])
+  items       StockCountItem[]
+
+  @@unique([businessId, documentNo])
+  @@index([businessId, status, startedAt])
+  @@index([warehouseId, status])
+}
+
+model StockCountItem {
+  id              String     @id @default(cuid())
+  stockCountId    String
+  productId       String
+  systemQuantity  Int
+  countedQuantity Int?
+  difference      Int?
+  note            String?
+  stockCount      StockCount @relation(fields: [stockCountId], references: [id], onDelete: Cascade)
+  product         Product    @relation(fields: [productId], references: [id])
+
+  @@unique([stockCountId, productId])
+  @@index([productId])
+}
+
+model StockTransfer {
+  id                     String              @id @default(cuid())
+  businessId             String
+  sourceWarehouseId      String
+  destinationWarehouseId String
+  createdById            String
+  requestedById          String?
+  sourceApprovedById     String?
+  sourceRejectedById     String?
+  destinationConfirmedById String?
+  receivedById           String?
+  canceledById           String?
+  documentNo             String
+  status                 StockTransferStatus @default(REQUESTED)
+  note                   String?
+  createdAt              DateTime            @default(now())
+  sourceApprovedAt       DateTime?
+  sourceRejectedAt       DateTime?
+  destinationConfirmedAt DateTime?
+  receivedAt             DateTime?
+  canceledAt             DateTime?
+  business               Business            @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  sourceWarehouse        Warehouse           @relation("SourceWarehouseTransfers", fields: [sourceWarehouseId], references: [id])
+  destinationWarehouse   Warehouse           @relation("DestinationWarehouseTransfers", fields: [destinationWarehouseId], references: [id])
+  createdBy              User                @relation("CreatedTransfers", fields: [createdById], references: [id])
+  requestedBy            User?               @relation("RequestedTransfers", fields: [requestedById], references: [id])
+  sourceApprovedBy       User?               @relation("SourceApprovedTransfers", fields: [sourceApprovedById], references: [id])
+  sourceRejectedBy       User?               @relation("SourceRejectedTransfers", fields: [sourceRejectedById], references: [id])
+  destinationConfirmedBy User?               @relation("DestinationConfirmedTransfers", fields: [destinationConfirmedById], references: [id])
+  receivedBy             User?               @relation("ReceivedTransfers", fields: [receivedById], references: [id])
+  canceledBy             User?               @relation("CanceledTransfers", fields: [canceledById], references: [id])
+  items                  StockTransferItem[]
+
+  @@unique([businessId, documentNo])
+  @@index([businessId, status, createdAt])
+  @@index([sourceWarehouseId])
+  @@index([destinationWarehouseId])
+}
+
+model StockTransferItem {
+  id         String        @id @default(cuid())
+  transferId String
+  productId  String
+  quantity   Int
+  unitCost   Decimal
+  transfer   StockTransfer @relation(fields: [transferId], references: [id], onDelete: Cascade)
+  product    Product       @relation(fields: [productId], references: [id])
+
+  @@index([transferId])
+  @@index([productId])
 }
 
 model Sale {
   id            String        @id @default(cuid())
   businessId    String
   branchId      String
+  warehouseId   String
   userId        String
   receiptNo     String
   subtotal      Decimal
@@ -276,6 +570,7 @@ model Sale {
   createdAt     DateTime      @default(now())
   business      Business      @relation(fields: [businessId], references: [id], onDelete: Cascade)
   branch        Branch        @relation(fields: [branchId], references: [id])
+  warehouse     Warehouse     @relation(fields: [warehouseId], references: [id])
   user          User          @relation(fields: [userId], references: [id])
   items         SaleItem[]
 
@@ -302,21 +597,79 @@ model SubscriptionPlan {
   productLimit   Int
   userLimit      Int
   branchLimit    Int
+  warehouseLimit Int
   priceMonthly   Decimal
   isActive       Boolean                @default(true)
   subscriptions  BusinessSubscription[]
+  accountPayments AccountPaymentRequest[]
 }
 
 model BusinessSubscription {
-  id         String             @id @default(cuid())
-  businessId String             @unique
-  planId     String
-  status     SubscriptionStatus @default(ACTIVE)
-  expiresAt  DateTime?
-  createdAt  DateTime           @default(now())
-  updatedAt  DateTime           @updatedAt
-  business   Business           @relation(fields: [businessId], references: [id], onDelete: Cascade)
-  plan       SubscriptionPlan   @relation(fields: [planId], references: [id])
+  id                   String                  @id @default(cuid())
+  businessId           String                  @unique
+  planId               String
+  status               SubscriptionStatus      @default(ACTIVE)
+  paymentMode          SubscriptionPaymentMode @default(FREE)
+  stripeCustomerId     String?
+  stripeSubscriptionId String?
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean                 @default(false)
+  expiresAt            DateTime?
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  business             Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  plan                 SubscriptionPlan        @relation(fields: [planId], references: [id])
+
+  @@index([stripeCustomerId])
+  @@index([stripeSubscriptionId])
+  @@index([paymentMode, expiresAt])
+}
+
+model AccountPaymentRequest {
+  id                String               @id @default(cuid())
+  reference         String               @unique
+  userId            String
+  businessId        String?
+  planId            String
+  planCode          String
+  billingCycle      String
+  checkoutMode      String?
+  amount            Decimal
+  currency          String               @default("THB")
+  status            AccountPaymentStatus @default(PENDING)
+  provider          String               @default("manual")
+  providerPaymentId String?
+  stripeCheckoutSessionId String?
+  stripePaymentIntentId   String?
+  stripeInvoiceId         String?
+  failureReason           String?
+  checkoutUrl       String?
+  paidAt            DateTime?
+  metadata          Json                 @default("{}")
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  business          Business?            @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  plan              SubscriptionPlan     @relation(fields: [planId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([businessId, createdAt])
+  @@index([status, createdAt])
+  @@index([provider, providerPaymentId])
+  @@index([stripeCheckoutSessionId])
+  @@index([stripePaymentIntentId])
+  @@index([stripeInvoiceId])
+}
+
+model StripeWebhookEvent {
+  id        String   @id @default(cuid())
+  eventId   String   @unique
+  eventType String
+  objectId  String?
+  createdAt DateTime @default(now())
+
+  @@index([eventType, createdAt])
 }
 
 model AuditLog {
@@ -334,4 +687,45 @@ model AuditLog {
   user       User?     @relation(fields: [userId], references: [id])
 
   @@index([businessId, createdAt])
+}
+
+model Notification {
+  id          String               @id @default(cuid())
+  businessId  String
+  branchId    String?
+  type        NotificationType
+  severity    NotificationSeverity @default(INFO)
+  title       String
+  body        String?
+  actionHref  String?
+  entityType  String?
+  entityId    String?
+  dedupeKey   String?
+  resolvedAt  DateTime?
+  createdAt   DateTime             @default(now())
+  updatedAt   DateTime             @updatedAt
+  business    Business             @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  branch      Branch?              @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  recipients  NotificationRecipient[]
+
+  @@unique([businessId, dedupeKey])
+  @@index([businessId, createdAt])
+  @@index([businessId, type, createdAt])
+  @@index([branchId])
+  @@index([resolvedAt])
+}
+
+model NotificationRecipient {
+  id             String       @id @default(cuid())
+  notificationId String
+  userId         String
+  readAt         DateTime?
+  archivedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([notificationId, userId])
+  @@index([userId, readAt])
+  @@index([userId, archivedAt])
 }

@@ -8,9 +8,9 @@ describe("branch inventory summaries", () => {
   ];
 
   const balances = [
-    { branchId: "main", quantity: 5, product: { id: "water", name: "น้ำดื่ม", sku: "WATER", costPrice: "8", minStock: 6 } },
-    { branchId: "main", quantity: 0, product: { id: "snack", name: "ขนม", sku: "SNACK", costPrice: "12", minStock: 3 } },
-    { branchId: "store", quantity: 10, product: { id: "soap", name: "สบู่", sku: "SOAP", costPrice: "14", minStock: 2 } }
+    { warehouseId: "main", quantity: 5, product: { id: "water", name: "น้ำดื่ม", sku: "WATER", costPrice: "8", minStock: 6 } },
+    { warehouseId: "main", quantity: 0, product: { id: "snack", name: "ขนม", sku: "SNACK", costPrice: "12", minStock: 3 } },
+    { warehouseId: "store", quantity: 10, product: { id: "soap", name: "สบู่", sku: "SOAP", costPrice: "14", minStock: 2 } }
   ];
 
   it("summarizes stock by real branch balances", () => {

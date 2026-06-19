@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Circle, CircleDot, Database, PartyPopper } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, CircleDot, Database, PartyPopper } from "lucide-react";
 import { useEffect } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "../components/Button";
@@ -77,7 +77,7 @@ export function OnboardingPage() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-black text-ink">ตั้งค่าร้านให้พร้อมขายใน 5 ขั้นตอน</h1>
-          <p className="mt-1 text-stone-600">ทำตามลำดับนี้เพื่อให้ร้านเริ่มบันทึกสินค้า ขายสินค้า และดูรายงานได้ถูกต้อง</p>
+          <p className="mt-1 text-stone-600">ทำตามขั้นตอนนี้เพื่อเริ่มใช้งานด้วยข้อมูลจริงของร้าน</p>
         </div>
         <Link to="/app/dashboard">
           <Button variant="secondary">ไปที่ Dashboard</Button>
@@ -91,6 +91,16 @@ export function OnboardingPage() {
         </div>
         <div className="mt-3 h-3 overflow-hidden rounded-full bg-stone-100">
           <div className="h-full rounded-full bg-leaf transition-all" style={{ width: `${data.percent}%` }} />
+        </div>
+      </Card>
+
+      <Card className="border-amber-200 bg-amber-50 p-4 shadow-none">
+        <div className="flex gap-3">
+          <AlertTriangle className="mt-0.5 shrink-0 text-amber-700" size={20} />
+          <div>
+            <p className="font-black text-amber-950">หน้านี้ไม่ใช่โหมดทดลองแยก</p>
+            <p className="mt-1 text-sm leading-6 text-amber-900">ข้อมูลที่บันทึกจะอยู่ในร้านของคุณ รวมถึงสินค้า ประวัติรับเข้า การขาย และการตัดสต็อก</p>
+          </div>
         </div>
       </Card>
 
@@ -157,7 +167,8 @@ export function OnboardingPage() {
               <div>
                 <h2 className="text-xl font-black text-ink">ยังไม่มีข้อมูลสินค้า?</h2>
                 <p className="mt-1 text-sm leading-6 text-stone-600">สร้างข้อมูลตัวอย่างสำหรับทดลองระบบ เหมาะสำหรับคนที่อยากลองขาย ลองรับเข้า และดูรายงานโดยไม่ต้องกรอกเอง</p>
-                <p className="mt-2 text-xs font-semibold text-stone-500">ระบบจะแยกเป็นสินค้าตัวอย่างจาก SKU เฉพาะ เพื่อให้ตรวจสอบและลบภายหลังได้ง่าย</p>
+                <p className="mt-2 text-xs font-semibold text-amber-700">ข้อมูลตัวอย่างจะถูกเพิ่มเป็นสินค้าจริงและประวัติรับเข้าจริง สามารถเก็บสินค้าเข้าประวัติภายหลังได้</p>
+                <p className="mt-1 text-xs font-semibold text-stone-500">ตรวจสอบได้จาก SKU/ชื่อสินค้า และเก็บเข้าประวัติได้ภายหลัง</p>
               </div>
             </div>
             <Button className="w-full sm:w-auto" variant="secondary" disabled={!hasBusiness || sampleData.isPending} onClick={() => sampleData.mutate()}>

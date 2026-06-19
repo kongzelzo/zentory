@@ -494,41 +494,45 @@ function TrustSection() {
 }
 
 function PricingSection() {
-  const plans: Array<[string, string, string[]]> = [
-    ["Free", "สำหรับทดลองใช้", ["เริ่มต้นฟรี", "รายงานพื้นฐาน", "เหมาะกับร้านเริ่มต้น"]],
-    ["Pro", "สำหรับร้านที่ใช้งานจริง", ["สินค้าและพนักงานมากขึ้น", "บาร์โค้ดตามแพ็กเกจ", "รายงานยอดขาย"]],
-    ["Premium", "สำหรับร้านที่ต้องการหลายฟีเจอร์หรือหลายสาขา", ["หลายสาขา", "รายงานขั้นสูง", "สิทธิ์พนักงานละเอียด"]]
+  const plans: Array<[string, string, string[], string, "primary" | "secondary"]> = [
+    ["Free", "สำหรับทดลองใช้", ["เริ่มต้นฟรี", "รายงานพื้นฐาน", "เหมาะกับร้านเริ่มต้น"], "เริ่มใช้ฟรี", "secondary"],
+    ["Pro", "สำหรับบัญชีที่ใช้งานจริง", ["สินค้าและพนักงานมากขึ้น", "บาร์โค้ดตามแพ็กเกจ", "รายงานยอดขาย"], "เลือกแพ็กเกจ Pro", "primary"],
+    ["Premium", "สำหรับบัญชีที่ต้องการหลายฟีเจอร์หรือหลายสาขา", ["หลายสาขา", "รายงานขั้นสูง", "สิทธิ์พนักงานละเอียด"], "คุยแพ็กเกจ Premium", "secondary"]
   ];
 
   return (
     <section id="pricing" className="mx-auto max-w-7xl px-5 py-14">
       <SectionHeading
         eyebrow="Pricing"
-        title="เริ่มใช้ฟรี อัปเกรดเมื่อร้านพร้อม"
-        text="หน้าแรกแสดงแพ็กเกจแบบย่อ รายละเอียดเต็มอยู่ที่หน้าราคา"
+        title="เริ่มใช้ฟรี อัปเกรดเมื่อบัญชีพร้อม"
+        text="แพ็กเกจเป็นสิทธิ์ที่ติดกับบัญชี รายละเอียดเต็มอยู่ที่หน้าราคา"
       />
       <div className="mt-8 grid gap-4 md:grid-cols-3">
-        {plans.map(([name, desc, items]) => (
-          <Card key={name} className={name === "Pro" ? "border-leaf" : ""}>
-            <h3 className="text-2xl font-black">{name}</h3>
-            <p className="mt-1 text-sm text-stone-600">{desc}</p>
-            <ul className="mt-5 space-y-2 text-sm text-stone-700">
-              {items.map((item) => (
-                <li key={item} className="flex items-center gap-2">
-                  <CheckCircle2 size={16} className="text-leaf" />
-                  {item}
-                </li>
-              ))}
-            </ul>
+        {plans.map(([name, desc, items, cta, variant]) => (
+          <Card key={name} className={`flex flex-col ${name === "Pro" ? "border-leaf" : ""}`}>
+            <div>
+              <h3 className="text-2xl font-black">{name}</h3>
+              <p className="mt-1 text-sm text-stone-600">{desc}</p>
+              <ul className="mt-5 space-y-2 text-sm text-stone-700">
+                {items.map((item) => (
+                  <li key={item} className="flex items-center gap-2">
+                    <CheckCircle2 size={16} className="text-leaf" />
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <Link to={name === "Free" ? "/register" : `/checkout?plan=${name.toLowerCase()}`} className="mt-6 block">
+              <Button variant={variant} className="w-full" icon={name === "Pro" ? <ArrowRight size={16} /> : undefined}>
+                {cta}
+              </Button>
+            </Link>
           </Card>
         ))}
       </div>
       <div className="mt-8 flex flex-wrap gap-3">
         <Link to="/pricing">
-          <Button variant="secondary">ดูแพ็กเกจทั้งหมด</Button>
-        </Link>
-        <Link to="/register">
-          <Button>เริ่มใช้ฟรี</Button>
+          <Button variant="secondary">ดูรายละเอียดแพ็กเกจทั้งหมด</Button>
         </Link>
       </div>
     </section>

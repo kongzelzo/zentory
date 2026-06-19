@@ -15,7 +15,7 @@ export type ProductImageFile = {
 
 @Injectable()
 export class ProductImageStorageService {
-  private readonly uploadRoot = join(process.cwd(), "uploads", "products");
+  private readonly uploadRoot = join(__dirname, "..", "..", "uploads", "products");
 
   async saveProductImage(file: ProductImageFile) {
     this.validate(file);

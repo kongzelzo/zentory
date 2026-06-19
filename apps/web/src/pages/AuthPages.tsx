@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, Eye, EyeOff, LockKeyhole, Mail, User } from "lucide-react";
 import type { AuthSession } from "@zentory/shared";
@@ -13,6 +13,23 @@ type LoginErrors = {
   password?: string;
 };
 
+type GoogleCredentialResponse = {
+  credential?: string;
+};
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        id: {
+          initialize: (options: { client_id: string; callback: (response: GoogleCredentialResponse) => void }) => void;
+          renderButton: (element: HTMLElement, options: { theme: "outline"; size: "large"; shape: "rectangular"; text: "signin_with"; width: number }) => void;
+        };
+      };
+    };
+  }
+}
+
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function LoginPage() {
@@ -22,9 +39,51 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [fieldErrors, setFieldErrors] = useState<LoginErrors>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isGoogleSubmitting, setIsGoogleSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const googleButtonRef = useRef<HTMLDivElement>(null);
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
 
-  if (session) return <Navigate to="/app/dashboard" replace />;
+  useEffect(() => {
+    if (!googleClientId || !googleButtonRef.current) return;
+    const clientId = googleClientId;
+
+    let isMounted = true;
+    function renderGoogleButton() {
+      if (!isMounted || !window.google || !googleButtonRef.current) return;
+      googleButtonRef.current.innerHTML = "";
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: handleGoogleCredential
+      });
+      window.google.accounts.id.renderButton(googleButtonRef.current, {
+        theme: "outline",
+        size: "large",
+        shape: "rectangular",
+        text: "signin_with",
+        width: googleButtonRef.current.offsetWidth || 352
+      });
+    }
+
+    const existingScript = document.querySelector<HTMLScriptElement>('script[src="https://accounts.google.com/gsi/client"]');
+    if (existingScript) {
+      if (window.google) renderGoogleButton();
+      else existingScript.addEventListener("load", renderGoogleButton, { once: true });
+    } else {
+      const script = document.createElement("script");
+      script.src = "https://accounts.google.com/gsi/client";
+      script.async = true;
+      script.defer = true;
+      script.addEventListener("load", renderGoogleButton, { once: true });
+      document.head.appendChild(script);
+    }
+
+    return () => {
+      isMounted = false;
+    };
+  }, [googleClientId]);
+
+  if (session) return <Navigate to={getPostAuthPath(session)} replace />;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -49,6 +108,26 @@ export function LoginPage() {
       setError(err instanceof Error ? err.message : "เข้าสู่ระบบไม่สำเร็จ");
     } finally {
       setIsSubmitting(false);
+    }
+  }
+
+  async function handleGoogleCredential(response: GoogleCredentialResponse) {
+    if (!response.credential) {
+      setError("เข้าสู่ระบบด้วย Google ไม่สำเร็จ");
+      return;
+    }
+
+    setError("");
+    setFieldErrors({});
+    setIsGoogleSubmitting(true);
+    try {
+      const session = await post<AuthSession>("/auth/google", { credential: response.credential });
+      setSession(session);
+      navigate(getPostAuthPath(session));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "เข้าสู่ระบบด้วย Google ไม่สำเร็จ");
+    } finally {
+      setIsGoogleSubmitting(false);
     }
   }
 
@@ -123,6 +202,26 @@ export function LoginPage() {
 
           {error ? <p className="rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700">{error}</p> : null}
 
+          <div className="space-y-3">
+            <div className="flex items-center gap-3 text-xs font-semibold text-stone-400">
+              <span className="h-px flex-1 bg-stone-200" />
+              <span>หรือเข้าสู่ระบบด้วย</span>
+              <span className="h-px flex-1 bg-stone-200" />
+            </div>
+            {googleClientId ? (
+              <div ref={googleButtonRef} className={isGoogleSubmitting ? "pointer-events-none opacity-60" : undefined} />
+            ) : (
+              <button
+                type="button"
+                className="flex h-11 w-full cursor-not-allowed items-center justify-center gap-3 rounded-md border border-stone-300 bg-white px-4 text-sm font-bold text-stone-500 opacity-75"
+                disabled
+              >
+                <span className="grid size-5 place-items-center rounded-full border border-stone-300 bg-white text-xs font-black text-blue-600">G</span>
+                เข้าสู่ระบบด้วย Google
+              </button>
+            )}
+          </div>
+
           <Button className="h-11 w-full" disabled={isSubmitting}>
             {isSubmitting ? "กำลังเข้าสู่ระบบ..." : "เข้าสู่ระบบ"}
           </Button>
@@ -147,7 +246,7 @@ export function ForgotPasswordPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isSent, setIsSent] = useState(false);
 
-  if (session) return <Navigate to="/app/dashboard" replace />;
+  if (session) return <Navigate to={getPostAuthPath(session)} replace />;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -248,7 +347,7 @@ export function ResetPasswordPage() {
   const [isComplete, setIsComplete] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
-  if (session) return <Navigate to="/app/dashboard" replace />;
+  if (session) return <Navigate to={getPostAuthPath(session)} replace />;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -396,7 +495,7 @@ export function RegisterPage() {
     try {
       const session = await post<AuthSession>("/auth/register", { name, email, password });
       setSession(session);
-      navigate("/setup-store");
+      navigate(getPostAuthPath(session));
     } catch (err) {
       setError(err instanceof Error ? err.message : "สมัครไม่สำเร็จ กรุณาลองอีกครั้ง");
     } finally {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getSaleTotals, sanitizeCartQuantity, type PosProduct } from "./pos";
+import { buildSalePayload, canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getPreferredWarehouseId, getSaleTotals, sanitizeCartQuantity, stockOf, type PosProduct } from "./pos";
 
 function product(overrides: Partial<PosProduct> = {}): PosProduct {
   return {
@@ -34,6 +34,39 @@ describe("POS helpers", () => {
     });
   });
 
+  it("counts and validates stock for the selected warehouse only", () => {
+    const item = product({
+      balances: [
+        { warehouseId: "front", quantity: 2 },
+        { warehouseId: "back", quantity: 8 }
+      ]
+    });
+
+    expect(stockOf(item)).toBe(10);
+    expect(stockOf(item, "front")).toBe(2);
+    expect(stockOf(item, "missing")).toBe(0);
+    expect(canAddToCart(item, 2, "front")).toEqual({ ok: false, reason: "stock-limit" });
+    expect(canAddToCart(item, 2, "back")).toEqual({ ok: true });
+  });
+
+  it("keeps legacy single-balance demo products sellable when a warehouse is selected", () => {
+    expect(stockOf(product({ balances: [{ quantity: 5 }] }), "front")).toBe(5);
+  });
+
+  it("keeps the current active warehouse or picks the storefront before the default active warehouse", () => {
+    const warehouses = [
+      { id: "inactive-default", status: "INACTIVE", isDefault: true },
+      { id: "main", status: "ACTIVE", isDefault: true },
+      { id: "front", type: "STORE_FRONT" as const, status: "ACTIVE" },
+      { id: "back", type: "BRANCH_WAREHOUSE" as const, status: "ACTIVE" }
+    ];
+
+    expect(getPreferredWarehouseId(warehouses, "back")).toBe("back");
+    expect(getPreferredWarehouseId(warehouses, "missing")).toBe("front");
+    expect(getPreferredWarehouseId(warehouses.filter((warehouse) => warehouse.id !== "front"), "missing")).toBe("main");
+    expect(getPreferredWarehouseId([{ id: "closed", status: "INACTIVE", isDefault: true }])).toBe("");
+  });
+
   it("reports cart line stock state for launch-safe POS messaging", () => {
     expect(getCartLineStockState(product({ balances: [{ quantity: 0 }] }), 1)).toBe("over");
     expect(getCartLineStockState(product({ balances: [{ quantity: 2 }] }), 2)).toBe("maxed");
@@ -47,6 +80,33 @@ describe("POS helpers", () => {
     expect(getCheckoutIssue([{ ...product({ balances: [{ quantity: 1 }] }), quantity: 2 }])).toBe("stock-exceeded");
     expect(getCheckoutIssue(cart)).toBeUndefined();
     expect(getSaleTotals(cart, 80)).toEqual({ subtotal: 50, discount: 80, total: 0 });
+  });
+
+  it("validates checkout against the selected warehouse stock", () => {
+    const cart = [{
+      ...product({
+        balances: [
+          { warehouseId: "front", quantity: 1 },
+          { warehouseId: "back", quantity: 5 }
+        ]
+      }),
+      quantity: 2
+    }];
+
+    expect(getCheckoutIssue(cart, "front")).toBe("stock-exceeded");
+    expect(getCheckoutIssue(cart, "back")).toBeUndefined();
+  });
+
+  it("builds a sale payload with the selected warehouse", () => {
+    const cart = [{ ...product(), quantity: 2 }];
+
+    expect(buildSalePayload(cart, "branch-1", "warehouse-1", 5, "CASH")).toEqual({
+      branchId: "branch-1",
+      warehouseId: "warehouse-1",
+      discount: 5,
+      paymentMethod: "CASH",
+      items: [{ productId: "product-1", quantity: 2 }]
+    });
   });
 
   it("allows cart quantity keyboard edits to clear to zero before checkout validation", () => {

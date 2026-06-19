@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, UseGuards } from "@nestjs/co
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
 import { BranchDto } from "../common/dto";
-import { MinRoleGuard } from "../common/roles.guard";
+import { AnyRoleGuard } from "../common/roles.guard";
 import { ZentoryService } from "../zentory.service";
 
 @Controller("branches")
@@ -21,13 +21,13 @@ export class BranchesController {
   }
 
   @Post()
-  @UseGuards(MinRoleGuard("MANAGER"))
+  @UseGuards(AnyRoleGuard("OWNER"))
   create(@CurrentUser() user: CurrentUser, @Body() dto: BranchDto) {
     return this.service.createBranch(user, dto);
   }
 
   @Patch(":id")
-  @UseGuards(MinRoleGuard("MANAGER"))
+  @UseGuards(AnyRoleGuard("OWNER", "BRANCH_MANAGER"))
   update(@CurrentUser() user: CurrentUser, @Param("id") id: string, @Body() dto: Partial<BranchDto>) {
     return this.service.updateBranch(user, id, dto);
   }

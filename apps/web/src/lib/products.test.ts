@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { countsTowardProductLimit, getProductImageUrl, getProductProfitMetrics, getProductStockAlert, getProductSummary, getStockBadge, getStockState, matchesProductSearch, stockOf, validateProductImageFile, type ProductForSummary } from "./products";
+import { balanceMatchesWarehouse, countsTowardProductLimit, getBalanceWarehouseName, getProductDisplayName, getProductImageUrl, getProductProfitMetrics, getProductReceiptHref, getProductStockAlert, getProductStockLocationSummary, getProductSummary, getStockBadge, getStockState, matchesProductSearch, stockInWarehouse, stockOf, validateProductImageFile, type ProductForSummary } from "./products";
 
 function product(overrides: Partial<ProductForSummary> = {}): ProductForSummary {
   return {
@@ -19,6 +19,36 @@ function product(overrides: Partial<ProductForSummary> = {}): ProductForSummary 
 describe("product helpers", () => {
   it("totals stock across balances", () => {
     expect(stockOf(product({ balances: [{ quantity: 3 }, { quantity: 7 }] }))).toBe(10);
+  });
+
+  it("summarizes stocked warehouse locations for product rows", () => {
+    const row = product({
+      balances: [
+        { quantity: 0, warehouse: { name: "หน้าร้าน" } },
+        { quantity: 8, warehouse: { name: "คลังหลังร้าน" } },
+        { quantity: 3, warehouse: { name: "คลังสำรอง" } },
+        { quantity: 2, warehouse: { name: "คลังออนไลน์" } }
+      ]
+    });
+
+    expect(getBalanceWarehouseName({ quantity: 1, warehouse: { name: "" }, branch: { name: "สาขาหลัก" } })).toBe("สาขาหลัก");
+    expect(getProductStockLocationSummary(row)).toBe("คลังหลังร้าน 8 ชิ้น, คลังสำรอง 3 ชิ้น + อีก 1 คลัง");
+    expect(getProductStockLocationSummary(product({ balances: [{ quantity: 0 }] }))).toBe("ยังไม่มีในคลัง");
+  });
+
+  it("matches and totals stock for a selected warehouse", () => {
+    const row = product({
+      balances: [
+        { warehouseId: "front", quantity: 4 },
+        { quantity: 6, warehouse: { id: "back", name: "คลังหลังร้าน" } },
+        { warehouseId: "front", quantity: 2 }
+      ]
+    });
+
+    expect(balanceMatchesWarehouse(row.balances[0], "front")).toBe(true);
+    expect(balanceMatchesWarehouse(row.balances[1], "back")).toBe(true);
+    expect(stockInWarehouse(row, "front")).toBe(6);
+    expect(stockInWarehouse(row, "back")).toBe(6);
   });
 
   it("marks stock as out, low, or healthy", () => {
@@ -101,6 +131,20 @@ describe("product helpers", () => {
     expect(matchesProductSearch(row, "zentory")).toBe(true);
     expect(matchesProductSearch(row, "สบู่")).toBe(false);
   });
+
+  it("displays and searches product variants by color and size", () => {
+    const row = product({ name: "เสื้อ Oversize A", variantColor: "ดำ", variantSize: "M" });
+
+    expect(getProductDisplayName(row)).toBe("เสื้อ Oversize A / ดำ / M");
+    expect(matchesProductSearch(row, "ดำ")).toBe(true);
+    expect(matchesProductSearch(row, "m")).toBe(true);
+  });
+
+  it("links product detail actions to the preselected receipt flow", () => {
+    expect(getProductReceiptHref("product-1")).toBe("/app/inventory/receipts?productId=product-1");
+    expect(getProductReceiptHref("sku/with space")).toBe("/app/inventory/receipts?productId=sku%2Fwith%20space");
+  });
+
   it("resolves product image paths from the API origin", () => {
     expect(getProductImageUrl({ imagePath: "/uploads/products/photo.webp" })).toBe("http://localhost:4000/uploads/products/photo.webp");
     expect(getProductImageUrl({ imagePath: "https://cdn.example.com/photo.webp" })).toBe("https://cdn.example.com/photo.webp");

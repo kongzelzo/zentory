@@ -19,6 +19,7 @@ export type OnboardingStatusResponse = {
 };
 
 const orderedStepKeys = ["setupStore", "firstProduct", "stockIn", "firstSale", "firstReport"] as const;
+const profileSetupKeyPrefix = "zentory.profile-setup.completed.";
 
 export const onboardingStepDefinitions = [
   {
@@ -32,7 +33,7 @@ export const onboardingStepDefinitions = [
   {
     key: "firstProduct",
     title: "เพิ่มสินค้าตัวแรก",
-    description: "เพิ่มสินค้าจริงหรือสินค้าทดลอง 1 รายการ เพื่อเริ่มใช้งานระบบ",
+    description: "เพิ่มสินค้า 1 รายการ ข้อมูลนี้จะอยู่ในระบบและจัดการต่อได้จากหน้าสินค้า",
     to: "/app/products/new",
     action: "เพิ่มสินค้า",
     completedAction: "ดูสินค้า"
@@ -40,17 +41,17 @@ export const onboardingStepDefinitions = [
   {
     key: "stockIn",
     title: "รับสินค้าเข้าสต็อก",
-    description: "บันทึกจำนวนสินค้าเข้าร้าน เพื่อให้ระบบรู้ว่าสินค้ามีพร้อมขายกี่ชิ้น",
+    description: "บันทึกจำนวนสินค้าเข้าร้าน ระบบจะสร้างประวัติรับเข้าสต็อกจริง",
     to: "/app/inventory/receipts",
     action: "รับสินค้าเข้า",
     completedAction: "ดูรายการรับเข้า"
   },
   {
     key: "firstSale",
-    title: "ทดลองขายสินค้า",
-    description: "ลองทำรายการขาย เพื่อทดสอบการตัดสต็อกและประวัติการขาย",
+    title: "ขายสินค้าจริงรายการแรก",
+    description: "ทำรายการขายด้วยสินค้าจริง ระบบจะตัดสต็อกและบันทึกประวัติขายจริง",
     to: "/app/pos",
-    action: "ทดลองขาย",
+    action: "ขายสินค้า",
     completedAction: "ดูประวัติขาย"
   },
   {
@@ -64,8 +65,30 @@ export const onboardingStepDefinitions = [
 ] as const;
 
 export function getPostAuthPath(session: AuthSession) {
-  if (!session.business) return "/setup-store";
+  if (session.membershipRequest?.status === "PENDING") return "/join-request/pending";
+  if (session.membershipRequest?.status === "REJECTED") return "/join-request/rejected";
+  if (!session.business && shouldShowProfileSetup(session)) return "/account-setup";
+  if (!session.business) return "/join-or-create";
   return "/app/dashboard";
+}
+
+export function getProfileSetupCompletedKey(userId: string) {
+  return `${profileSetupKeyPrefix}${userId}`;
+}
+
+export function hasCompletedProfileSetup(userId: string) {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(getProfileSetupCompletedKey(userId)) === "true";
+}
+
+export function markProfileSetupCompleted(userId: string) {
+  if (typeof localStorage === "undefined") return;
+  localStorage.setItem(getProfileSetupCompletedKey(userId), "true");
+}
+
+export function shouldShowProfileSetup(session: AuthSession) {
+  if (session.business || session.membershipRequest) return false;
+  return !hasCompletedProfileSetup(session.user.id);
 }
 
 export function shouldShowOnboardingNav(session?: AuthSession) {

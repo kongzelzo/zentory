@@ -2,6 +2,7 @@ import { ArrowLeft, CheckCircle2, Eye, FileText, LockKeyhole, Megaphone, ShieldA
 import { Link, useParams } from "react-router-dom";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { Dropdown } from "../components/Dropdown";
 
 export function AdminCustomerDetailPage() {
   const { id } = useParams();
@@ -97,8 +98,21 @@ export function AdminTicketDetailPage() {
         <Card>
           <h2 className="text-xl font-black">Ticket Control</h2>
           <div className="mt-4 space-y-3">
-            <select className="field" defaultValue="open"><option value="open">เปิด</option><option value="pending">รอลูกค้า</option><option value="closed">ปิด</option></select>
-            <select className="field" defaultValue="high"><option value="high">High</option><option value="normal">Normal</option></select>
+            <Dropdown
+              defaultValue="open"
+              options={[
+                { value: "open", label: "เปิด" },
+                { value: "pending", label: "รอลูกค้า" },
+                { value: "closed", label: "ปิด" }
+              ]}
+            />
+            <Dropdown
+              defaultValue="high"
+              options={[
+                { value: "high", label: "High" },
+                { value: "normal", label: "Normal" }
+              ]}
+            />
             <input className="field" defaultValue="Support Team" />
             <Button className="w-full">อัปเดต Ticket</Button>
           </div>
@@ -150,8 +164,22 @@ export function AdminAnnouncementComposerPage() {
       <Card>
         <div className="grid gap-4 md:grid-cols-2">
           <input className="field" placeholder="หัวข้อประกาศ" />
-          <select className="field" defaultValue="maintenance"><option value="maintenance">Maintenance</option><option value="feature">Feature Update</option><option value="promo">Promotion</option></select>
-          <select className="field" defaultValue="all"><option value="all">ทุกร้าน</option><option value="pro">เฉพาะ Pro</option><option value="free">เฉพาะ Free</option></select>
+          <Dropdown
+            defaultValue="maintenance"
+            options={[
+              { value: "maintenance", label: "Maintenance" },
+              { value: "feature", label: "Feature Update" },
+              { value: "promo", label: "Promotion" }
+            ]}
+          />
+          <Dropdown
+            defaultValue="all"
+            options={[
+              { value: "all", label: "ทุกร้าน" },
+              { value: "pro", label: "เฉพาะ Pro" },
+              { value: "free", label: "เฉพาะ Free" }
+            ]}
+          />
           <input className="field" type="datetime-local" />
           <textarea className="field md:col-span-2" rows={8} placeholder="เนื้อหาประกาศ" />
         </div>

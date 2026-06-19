@@ -1,7 +1,7 @@
-import { Body, Controller, Get, Post, UseGuards } from "@nestjs/common";
+import { Body, Controller, Get, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
-import { BusinessDto, ForgotPasswordDto, LoginDto, RefreshDto, RegisterDto, ResetPasswordDto } from "../common/dto";
+import { BusinessDto, ForgotPasswordDto, GoogleLoginDto, LoginDto, MembershipRequestDto, ProfileDto, RefreshDto, RegisterDto, ResetPasswordDto } from "../common/dto";
 import { AuthService } from "./auth.service";
 
 @Controller()
@@ -16,6 +16,11 @@ export class AuthController {
   @Post("auth/login")
   login(@Body() dto: LoginDto) {
     return this.auth.login(dto);
+  }
+
+  @Post("auth/google")
+  googleLogin(@Body() dto: GoogleLoginDto) {
+    return this.auth.googleLogin(dto);
   }
 
   @Post("auth/forgot-password")
@@ -45,9 +50,27 @@ export class AuthController {
     return this.auth.me(user.userId);
   }
 
+  @Patch("me/profile")
+  @UseGuards(AuthGuard)
+  updateProfile(@CurrentUser() user: CurrentUser, @Body() dto: ProfileDto) {
+    return this.auth.updateProfile(user.userId, dto);
+  }
+
   @Post("businesses")
   @UseGuards(AuthGuard)
   createBusiness(@CurrentUser() user: CurrentUser, @Body() dto: BusinessDto) {
     return this.auth.createBusiness(user.userId, dto);
+  }
+
+  @Post("membership-requests")
+  @UseGuards(AuthGuard)
+  requestMembership(@CurrentUser() user: CurrentUser, @Body() dto: MembershipRequestDto) {
+    return this.auth.requestMembership(user.userId, dto);
+  }
+
+  @Get("membership-requests/target")
+  @UseGuards(AuthGuard)
+  membershipTarget(@Query("businessId") businessId?: string, @Query("branchId") branchId?: string) {
+    return this.auth.membershipTarget(businessId ?? "", branchId);
   }
 }

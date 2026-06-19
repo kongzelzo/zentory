@@ -6,6 +6,8 @@ export type CurrentUser = {
   isSystemAdmin: boolean;
   businessId?: string;
   role?: string;
+  permissionOverrides?: unknown;
+  assignedBranchIds?: string[];
 };
 
 export const CurrentUser = createParamDecorator(

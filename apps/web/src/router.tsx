@@ -7,16 +7,21 @@ import { AdminShell } from "./components/AdminShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PublicLayout } from "./components/PublicLayout";
 import { AdminPage } from "./pages/AdminPage";
-import { AlertsPage } from "./pages/AlertsPage";
-import { DashboardPage } from "./pages/DashboardPage";
+import { CashierDashboardPage, DashboardRedirectPage, OwnerDashboardPage, StockDashboardPage, ViewerDashboardPage } from "./pages/DashboardPage";
 import { InventoryAdjustmentPage, InventoryReceiptPage } from "./pages/InventoryPages";
 import { InventoryMovementPage } from "./pages/InventoryMovementPage";
 import { LandingPage } from "./pages/LandingPage";
 import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from "./pages/AuthPages";
+import { AccountSetupPage, JoinOrCreatePage, JoinRequestPendingPage, JoinRequestRejectedPage, JoinStorePage } from "./pages/JoinStorePages";
 import { BarcodePage, BillingPage, ImportExportPage, OperationPage, SupportPage } from "./pages/OperationsPages";
-import { BranchDetailPage, BranchesPage } from "./pages/BranchesPage";
+import { BranchSettingsPage } from "./pages/BranchSettingsPage";
+import { BranchEditPage, BranchesPage, WarehouseDetailPage, WarehousesPage } from "./pages/BranchesPage";
+import { CategoriesPage } from "./pages/CategoriesPage";
+import { CheckoutPage } from "./pages/CheckoutPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
+import { NotificationsPage } from "./pages/NotificationsPage";
 import { PosPage } from "./pages/PosPage";
+import { PosPaymentPage } from "./pages/PosPaymentPage";
 import { PricingPage } from "./pages/PricingPage";
 import { ProductDetailPage, ProductEditPage } from "./pages/ProductDetailPages";
 import { ProductFormPage, ProductsPage } from "./pages/ProductsPage";
@@ -25,7 +30,11 @@ import { SalesReportPage, StockReportPage } from "./pages/ReportsPage";
 import { SaleDetailPage, SalesPage } from "./pages/SalesPages";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupStorePage } from "./pages/SetupStorePage";
-import { StaffPage } from "./pages/StaffPage";
+import { StoreStaffPage } from "./pages/StoreStaffPage";
+import { StockCountsPage } from "./pages/StockCountsPage";
+import { StockSearchPage } from "./pages/StockSearchPage";
+import { TransferRequestsPage } from "./pages/TransferRequestsPage";
+import { TransfersPage } from "./pages/TransfersPage";
 
 export const router = createBrowserRouter([
   {
@@ -33,6 +42,7 @@ export const router = createBrowserRouter([
     children: [
       { path: "/", element: <LandingPage /> },
       { path: "/pricing", element: <PricingPage /> },
+      { path: "/checkout", element: <CheckoutPage /> },
       { path: "/login", element: <LoginPage /> },
       { path: "/forgot-password", element: <ForgotPasswordPage /> },
       { path: "/reset-password", element: <ResetPasswordPage /> },
@@ -43,53 +53,72 @@ export const router = createBrowserRouter([
     element: <ProtectedRoute />,
     children: [
       { path: "/setup-store", element: <SetupStorePage /> },
+      { path: "/account-setup", element: <AccountSetupPage /> },
+      { path: "/join-or-create", element: <JoinOrCreatePage /> },
+      { path: "/join-store", element: <JoinStorePage /> },
+      { path: "/join-request/pending", element: <JoinRequestPendingPage /> },
+      { path: "/join-request/rejected", element: <JoinRequestRejectedPage /> },
       { path: "/onboarding", element: <Navigate to="/app/onboarding" replace /> },
+      { path: "/app/pos/payment", element: <PosPaymentPage /> },
       {
         path: "/app",
         element: <AppShell />,
         children: [
           { index: true, element: <Navigate to="/app/dashboard" replace /> },
-          { path: "dashboard", element: <DashboardPage /> },
+          { path: "dashboard", element: <DashboardRedirectPage /> },
+          { path: "dashboard/owner", element: <OwnerDashboardPage /> },
+          { path: "dashboard/cashier", element: <CashierDashboardPage /> },
+          { path: "dashboard/stock", element: <StockDashboardPage /> },
+          { path: "dashboard/viewer", element: <ViewerDashboardPage /> },
           { path: "onboarding", element: <OnboardingPage /> },
           { path: "pos", element: <PosPage /> },
           { path: "sales", element: <SalesPage /> },
           { path: "sales/:id", element: <SaleDetailPage /> },
           { path: "products", element: <ProductsPage /> },
+          { path: "categories", element: <CategoriesPage /> },
           { path: "products/new", element: <ProductFormPage /> },
           { path: "products/:id", element: <ProductDetailPage /> },
           { path: "products/:id/edit", element: <ProductEditPage /> },
           { path: "inventory/receipts", element: <InventoryReceiptPage /> },
           { path: "inventory/adjustments", element: <InventoryAdjustmentPage /> },
           { path: "inventory/movements", element: <InventoryMovementPage /> },
+          { path: "stock-search", element: <StockSearchPage /> },
           { path: "reports/stock", element: <StockReportPage /> },
           { path: "reports/sales", element: <SalesReportPage /> },
-          { path: "alerts", element: <AlertsPage /> },
+          { path: "alerts", element: <Navigate to="/app/reports/stock" replace /> },
           { path: "suppliers", element: <OperationPage kind="suppliers" /> },
           { path: "purchase-orders", element: <OperationPage kind="purchase-orders" /> },
           { path: "customers", element: <OperationPage kind="customers" /> },
           { path: "barcode", element: <BarcodePage /> },
           { path: "import-export", element: <ImportExportPage /> },
           { path: "audit-log", element: <OperationPage kind="audit-log" /> },
-          { path: "transfers", element: <OperationPage kind="transfers" /> },
+          { path: "transfers", element: <TransfersPage /> },
+          { path: "transfers/requests", element: <TransferRequestsPage /> },
           { path: "branches", element: <BranchesPage /> },
-          { path: "branches/:id", element: <BranchDetailPage /> },
-          { path: "billing", element: <BillingPage /> },
+          { path: "branches/:id/edit", element: <BranchEditPage /> },
+          { path: "branch-settings", element: <BranchSettingsPage /> },
+          { path: "warehouses", element: <WarehousesPage /> },
+          { path: "warehouses/:id", element: <WarehouseDetailPage /> },
+          { path: "billing", element: <Navigate to="/app/profile/billing" replace /> },
           { path: "returns", element: <AdvancedOperationPage kind="returns" /> },
-          { path: "stock-counts", element: <AdvancedOperationPage kind="stock-counts" /> },
+          { path: "stock-counts", element: <StockCountsPage /> },
           { path: "expenses", element: <AdvancedOperationPage kind="expenses" /> },
           { path: "profit-loss", element: <ProfitLossPage /> },
           { path: "receipts", element: <AdvancedOperationPage kind="receipts" /> },
           { path: "discounts", element: <AdvancedOperationPage kind="discounts" /> },
           { path: "payment-methods", element: <PaymentMethodsPage /> },
           { path: "notifications/settings", element: <NotificationSettingsPage /> },
+          { path: "notifications", element: <NotificationsPage /> },
           { path: "tax-invoices", element: <TaxInvoicesPage /> },
           { path: "activity-approvals", element: <AdvancedOperationPage kind="activity-approvals" /> },
           { path: "data-backup", element: <DataBackupPage /> },
           { path: "api-keys", element: <ApiKeysPage /> },
           { path: "support", element: <SupportPage /> },
-          { path: "staff", element: <StaffPage /> },
+          { path: "staff", element: <Navigate to="/app/branch-settings?section=staff" replace /> },
           { path: "settings", element: <SettingsPage /> },
-          { path: "profile", element: <ProfilePage /> }
+          { path: "settings/staff", element: <StoreStaffPage /> },
+          { path: "profile", element: <ProfilePage /> },
+          { path: "profile/billing", element: <BillingPage /> }
         ]
       },
       {

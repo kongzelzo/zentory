@@ -1,5 +1,5 @@
 import { useAuth } from "../state/auth";
-import { localDemo } from "./local-demo";
+import { isDemoSession, isLocalDemoToken, localDemo } from "./local-demo";
 import type { AuthSession } from "@zentory/shared";
 
 const baseUrl = import.meta.env.VITE_API_URL ?? "http://localhost:4000/api/v1";
@@ -17,13 +17,15 @@ const realDataFallbackBlockedPrefixes = [
   "/sales",
   "/inventory",
   "/notifications",
-  "/payments"
+  "/payments",
+  "/audit-logs",
+  "/backups"
 ];
 
 function shouldBlockLocalDemoFallback(path: string) {
   const pathname = new URL(path, "http://local-api").pathname;
   const token = useAuth.getState().session?.accessToken;
-  const isLocalDemoSession = token === "local-demo-access";
+  const isLocalDemoSession = isLocalDemoToken(token);
   return authFallbackBlockedPaths.has(pathname) || (!isLocalDemoSession && realDataFallbackBlockedPrefixes.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)));
 }
 
@@ -55,7 +57,9 @@ async function refreshSession() {
 }
 
 export async function api<T>(path: string, init: RequestInit = {}) {
-  const token = useAuth.getState().ensureActiveSession()?.accessToken;
+  const session = useAuth.getState().ensureActiveSession();
+  if (isDemoSession(session)) return localDemo<T>(path, init);
+  const token = session?.accessToken;
   let response: Response;
   try {
     response = await request(path, init, token);
@@ -82,12 +86,20 @@ export async function api<T>(path: string, init: RequestInit = {}) {
 }
 
 export async function downloadApi(path: string) {
-  const token = useAuth.getState().ensureActiveSession()?.accessToken;
+  const session = useAuth.getState().ensureActiveSession();
+  if (isDemoSession(session)) {
+    const content = await localDemo<string>(path, { method: "GET" });
+    return new Blob([content], { type: "text/csv;charset=utf-8" });
+  }
+  const token = session?.accessToken;
   let response: Response;
   try {
     response = await request(path, { method: "GET" }, token);
   } catch (error) {
     if (error instanceof TypeError) {
+      if (shouldBlockLocalDemoFallback(path)) {
+        throw new Error("เชื่อมต่อเซิร์ฟเวอร์ไม่สำเร็จ กรุณาตรวจสอบว่า API กำลังทำงานอยู่");
+      }
       const content = await localDemo<string>(path, { method: "GET" });
       return new Blob([content], { type: "text/csv;charset=utf-8" });
     }

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { resolveEffectivePermissions, type AuthSession, type Permission } from "@zentory/shared";
 import { ArrowDown, ArrowUp, Boxes, Check, CheckCircle2, ChevronDown, CircleCheck, ClipboardList, Clock3, History, Image as ImageIcon, PackageCheck, Plus, Trash2, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
@@ -73,6 +73,12 @@ function ProductDropdown({ products, selectedProduct, onChange, invalid = false,
   const containerRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
   const selectedLabel = selectedProduct ? `${getProductDisplayName(selectedProduct)} (${selectedProduct.sku})` : "เลือกสินค้า";
+  const listboxId = useId();
+
+  function choose(productId: string) {
+    onChange(productId);
+    setOpen(false);
+  }
 
   useEffect(() => {
     if (!open) return undefined;
@@ -99,6 +105,8 @@ function ProductDropdown({ products, selectedProduct, onChange, invalid = false,
           invalid ? "border-red-400 focus:border-red-600 focus:shadow-[0_0_0_3px_rgba(220,38,38,0.14)]" : ""
         }`}
         aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-controls={listboxId}
         aria-invalid={invalid}
         aria-describedby={describedBy}
         onClick={() => setOpen((current) => !current)}
@@ -112,17 +120,23 @@ function ProductDropdown({ products, selectedProduct, onChange, invalid = false,
       </button>
 
       {open ? (
-        <div className="absolute left-0 right-0 z-30 mt-2 max-h-80 overflow-y-auto rounded-md border border-stone-200 bg-white p-1.5 shadow-xl">
+        <div id={listboxId} role="listbox" className="absolute left-0 right-0 z-30 mt-2 max-h-80 overflow-y-auto rounded-md border border-stone-200 bg-white p-1.5 shadow-xl">
           {products.map((product) => {
             const selected = product.id === selectedProduct?.id;
             return (
               <button
                 key={product.id}
                 type="button"
+                role="option"
+                aria-selected={selected}
                 className={`flex w-full items-center gap-3 rounded px-3 py-2.5 text-left text-sm transition ${selected ? "bg-teal-50" : "hover:bg-stone-50"}`}
-                onClick={() => {
-                  onChange(product.id);
-                  setOpen(false);
+                onPointerDown={(event) => {
+                  if (event.pointerType === "mouse" && event.button !== 0) return;
+                  event.preventDefault();
+                  choose(product.id);
+                }}
+                onClick={(event) => {
+                  if (event.detail === 0) choose(product.id);
                 }}
               >
                 <ProductThumb product={product} className="h-12 w-12" />
@@ -157,6 +171,7 @@ function refreshCoreQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({ queryKey: ["inventory-balances"] });
   queryClient.invalidateQueries({ queryKey: ["dashboard"] });
   queryClient.invalidateQueries({ queryKey: ["stock-report"] });
+  queryClient.invalidateQueries({ queryKey: ["adjustments"] });
 }
 
 export function InventoryReceiptPage() {
@@ -689,9 +704,9 @@ export function InventoryAdjustmentPage() {
   const reasonError = error === "กรุณาระบุเหตุผล" ? error : "";
   const reasonPresets = ["นับจริงไม่ตรง", "สินค้าเสียหาย", "ของหาย", "แก้ยอดยกมา"];
   const mutation = useMutation({
-    mutationFn: (body: unknown) => post("/inventory/adjustments", body),
-    onSuccess: () => {
-      setMessage("ปรับสต็อกเรียบร้อย");
+    mutationFn: (body: unknown) => post<{ status?: string }>("/inventory/adjustments", body),
+    onSuccess: (result) => {
+      setMessage(result.status === "APPROVED" ? "ปรับสต็อกเรียบร้อย" : "ส่งคำขอปรับสต็อกแล้ว รอผู้จัดการอนุมัติก่อนขยับยอดจริง");
       setError("");
       setQuantityInput("");
       setReason("");

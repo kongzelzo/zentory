@@ -76,6 +76,48 @@ describe("NotificationService", () => {
     });
   });
 
+  it("creates stock adjustment approval notifications with product-first copy", async () => {
+    const prisma: any = {
+      stockAdjustment: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: "adjustment_1",
+          businessId: "business_1",
+          branchId: "branch_1",
+          warehouse: { branchId: "branch_1", branch: { id: "branch_1", name: "สาขาหลัก" } },
+          product: { name: "ทดสอบ01", sku: "TEST-01" },
+          user: { name: "zerzo zero" },
+          userId: "requester",
+          status: "PENDING",
+          documentNo: "ADJ-20260619-BB9F62C8",
+          quantity: 2
+        })
+      },
+      businessMember: {
+        findMany: jest.fn().mockResolvedValue([
+          { userId: "requester", role: "STOCK_STAFF", permissionOverrides: {}, branchAssignments: [{ branchId: "branch_1" }] },
+          { userId: "manager", role: "BRANCH_MANAGER", permissionOverrides: { "inventory.adjust.approve": true }, branchAssignments: [{ branchId: "branch_1" }] }
+        ])
+      },
+      notification: {
+        upsert: jest.fn().mockResolvedValue({ id: "notification_adjustment" })
+      },
+      notificationRecipient: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 })
+      }
+    };
+    const service = new NotificationService(prisma);
+
+    await service.createStockAdjustmentRequestNotification("business_1", "adjustment_1");
+
+    expect(prisma.notification.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      create: expect.objectContaining({
+        title: "ทดสอบ01 ขอเพิ่มสต็อก 2",
+        body: "เลขที่ ADJ-20260619-BB9F62C8 • ขอโดย zerzo zero"
+      })
+    }));
+  });
+
   it("checks branch access before marking a branch read", async () => {
     const prisma: any = {
       branch: {
@@ -272,7 +314,8 @@ describe("NotificationService", () => {
 
     expect(prisma.notification.upsert).toHaveBeenCalledWith(expect.objectContaining({
       where: { businessId_dedupeKey: { businessId: "business_1", dedupeKey: "stock-alert:branch_1:product_1" } },
-      create: expect.objectContaining({ type: "STOCK_ALERT", severity: "WARNING" })
+      create: expect.objectContaining({ type: "STOCK_ALERT", severity: "WARNING" }),
+      update: expect.not.objectContaining({ createdAt: expect.anything() })
     }));
     expect(prisma.notification.updateMany).toHaveBeenCalledWith({
       where: { businessId: "business_1", dedupeKey: "stock-alert:branch_1:product_1", resolvedAt: null },
@@ -450,7 +493,7 @@ describe("NotificationService", () => {
     expect(withBranchManager.notification.upsert).toHaveBeenCalledWith(expect.objectContaining({
       create: expect.objectContaining({
         branchId: "branch_dest",
-        title: "คำขอโอน TRF-TEST รอยืนยันรับสินค้า",
+        title: "คำขอโอน TRF-TEST รอยืนยันรับของ",
         actionHref: "/app/transfers/requests",
         dedupeKey: "transfer-receive:transfer_1"
       })

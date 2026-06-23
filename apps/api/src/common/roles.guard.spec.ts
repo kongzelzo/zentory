@@ -11,29 +11,59 @@ function context(role: string, isSystemAdmin = false, permissionOverrides?: unkn
 }
 
 describe("MinRoleGuard", () => {
-  it("allows higher ranked roles", () => {
+  const prisma = {
+    businessMember: {
+      findFirst: jest.fn()
+    }
+  };
+
+  beforeEach(() => {
+    prisma.businessMember.findFirst.mockReset();
+  });
+
+  it("allows higher ranked roles from the active membership", async () => {
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "OWNER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = MinRoleGuard("STOCK_STAFF");
-    expect(new Guard().canActivate(context("OWNER"))).toBe(true);
+    await expect(new (Guard as any)(prisma).canActivate(context("CASHIER"))).resolves.toBe(true);
   });
 
-  it("allows system admins", () => {
+  it("allows system admins", async () => {
     const Guard = MinRoleGuard("OWNER");
-    expect(new Guard().canActivate(context("VIEWER", true))).toBe(true);
+    await expect(new (Guard as any)(prisma).canActivate(context("VIEWER", true))).resolves.toBe(true);
+    expect(prisma.businessMember.findFirst).not.toHaveBeenCalled();
   });
 
-  it("blocks lower ranked roles", () => {
+  it("blocks lower ranked active membership roles", async () => {
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = MinRoleGuard("MANAGER");
-    expect(() => new Guard().canActivate(context("CASHIER"))).toThrow(ForbiddenException);
+    await expect(new (Guard as any)(prisma).canActivate(context("MANAGER"))).rejects.toThrow(ForbiddenException);
   });
 
-  it("blocks cashiers from stock staff capabilities", () => {
+  it("blocks cashiers from stock staff capabilities", async () => {
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = AnyRoleGuard("OWNER", "MANAGER", "STOCK_STAFF");
-    expect(() => new Guard().canActivate(context("CASHIER"))).toThrow(ForbiddenException);
+    await expect(new (Guard as any)(prisma).canActivate(context("CASHIER"))).rejects.toThrow(ForbiddenException);
   });
 
-  it("allows cashiers to sell", () => {
+  it("allows cashiers to sell", async () => {
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = AnyRoleGuard("OWNER", "MANAGER", "CASHIER");
-    expect(new Guard().canActivate(context("CASHIER"))).toBe(true);
+    await expect(new (Guard as any)(prisma).canActivate(context("VIEWER"))).resolves.toBe(true);
+  });
+
+  it("refreshes assigned branches from the active membership", async () => {
+    prisma.businessMember.findFirst.mockResolvedValue({
+      role: "BRANCH_MANAGER",
+      permissionOverrides: {},
+      branchAssignments: [{ branchId: "branch_fresh" }]
+    });
+    const request = { user: { userId: "user_1", businessId: "business_1", role: "BRANCH_MANAGER", assignedBranchIds: ["branch_stale"] } };
+    const staleContext = {
+      switchToHttp: () => ({ getRequest: () => request })
+    } as unknown as ExecutionContext;
+    const Guard = MinRoleGuard("MANAGER");
+    await expect(new (Guard as any)(prisma).canActivate(staleContext)).resolves.toBe(true);
+    expect(request.user.assignedBranchIds).toEqual(["branch_fresh"]);
   });
 });
 
@@ -75,19 +105,19 @@ describe("PermissionGuard", () => {
   });
 
   it("allows users with an override grant", async () => {
-    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: { "inventory.adjust": true } });
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: { "inventory.adjust": true }, branchAssignments: [] });
     const Guard = PermissionGuard("inventory.adjust");
     await expect(new (Guard as any)(prisma).canActivate(context("CASHIER"))).resolves.toBe(true);
   });
 
   it("blocks users without permission", async () => {
-    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: {} });
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "CASHIER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = PermissionGuard("inventory.adjust");
     await expect(new (Guard as any)(prisma).canActivate(context("CASHIER"))).rejects.toThrow(ForbiddenException);
   });
 
   it("blocks dashboard goal updates for roles without business update permission", async () => {
-    prisma.businessMember.findFirst.mockResolvedValue({ role: "MANAGER", permissionOverrides: {} });
+    prisma.businessMember.findFirst.mockResolvedValue({ role: "MANAGER", permissionOverrides: {}, branchAssignments: [] });
     const Guard = PermissionGuard("business.update");
     await expect(new (Guard as any)(prisma).canActivate(context("MANAGER"))).rejects.toThrow(ForbiddenException);
   });

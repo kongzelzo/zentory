@@ -58,6 +58,9 @@ enum SaleStatus {
 
 enum SubscriptionStatus {
   ACTIVE
+  PAST_DUE
+  LIMITED
+  CANCELED
   EXPIRED
   SUSPENDED
 }
@@ -114,6 +117,12 @@ enum StockCountStatus {
   CANCELED
 }
 
+enum StockAdjustmentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 enum NotificationType {
   STAFF_REQUEST
   TRANSFER_REQUEST
@@ -128,6 +137,13 @@ enum NotificationSeverity {
   SUCCESS
   WARNING
   CRITICAL
+}
+
+enum BackupStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+  DELETED
 }
 
 model User {
@@ -146,6 +162,8 @@ model User {
   memberships    BusinessMember[]
   sales          Sale[]
   stockMovements StockMovement[]
+  stockAdjustments StockAdjustment[] @relation("RequestedStockAdjustments")
+  reviewedStockAdjustments StockAdjustment[] @relation("ReviewedStockAdjustments")
   createdTransfers StockTransfer[] @relation("CreatedTransfers")
   requestedTransfers StockTransfer[] @relation("RequestedTransfers")
   sourceApprovedTransfers StockTransfer[] @relation("SourceApprovedTransfers")
@@ -157,6 +175,7 @@ model User {
   stockCounts    StockCount[]
   notificationRecipients NotificationRecipient[]
   accountPayments AccountPaymentRequest[]
+  backupRecords BackupRecord[]
 
   @@index([passwordResetTokenHash])
 }
@@ -202,6 +221,7 @@ model Business {
   accountPayments AccountPaymentRequest[]
   auditLogs      AuditLog[]
   notifications  Notification[]
+  backupRecords  BackupRecord[]
 }
 
 model BusinessMember {
@@ -367,6 +387,7 @@ model Product {
   balances    InventoryBalance[]
   movements   StockMovement[]
   saleItems   SaleItem[]
+  adjustments StockAdjustment[]
   transferItems StockTransferItem[]
   stockCountItems StockCountItem[]
   branchStatuses ProductBranchStatus[]
@@ -456,15 +477,27 @@ model StockAdjustment {
   businessId  String
   warehouseId String
   userId      String
+  productId   String?
   documentNo  String
+  status      StockAdjustmentStatus @default(PENDING)
+  quantity    Int?
   reason      String
   adjustmentMode AdjustmentMode?
   targetQuantity Int?
+  reviewedById String?
+  reviewedAt  DateTime?
+  rejectionReason String?
   createdAt   DateTime @default(now())
   business    Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
   warehouse   Warehouse @relation(fields: [warehouseId], references: [id])
+  product     Product? @relation(fields: [productId], references: [id])
+  user        User     @relation("RequestedStockAdjustments", fields: [userId], references: [id])
+  reviewedBy  User?    @relation("ReviewedStockAdjustments", fields: [reviewedById], references: [id])
 
   @@unique([businessId, documentNo])
+  @@index([businessId, status, createdAt])
+  @@index([warehouseId, status])
+  @@index([productId])
 }
 
 model StockCount {
@@ -615,7 +648,10 @@ model BusinessSubscription {
   currentPeriodStart   DateTime?
   currentPeriodEnd     DateTime?
   cancelAtPeriodEnd    Boolean                 @default(false)
+  graceEndsAt          DateTime?
   expiresAt            DateTime?
+  selectedFreeBranchId String?
+  selectedFreeWarehouseId String?
   createdAt            DateTime                @default(now())
   updatedAt            DateTime                @updatedAt
   business             Business                @relation(fields: [businessId], references: [id], onDelete: Cascade)
@@ -624,6 +660,7 @@ model BusinessSubscription {
   @@index([stripeCustomerId])
   @@index([stripeSubscriptionId])
   @@index([paymentMode, expiresAt])
+  @@index([status, graceEndsAt])
 }
 
 model AccountPaymentRequest {
@@ -687,6 +724,30 @@ model AuditLog {
   user       User?     @relation(fields: [userId], references: [id])
 
   @@index([businessId, createdAt])
+}
+
+model BackupRecord {
+  id          String       @id @default(cuid())
+  businessId  String?
+  requestedById String?
+  status      BackupStatus @default(RUNNING)
+  scope       String       @default("SYSTEM")
+  storagePath String?
+  fileName    String?
+  sizeBytes   Int?
+  checksum    String?
+  startedAt   DateTime     @default(now())
+  completedAt DateTime?
+  expiresAt   DateTime?
+  errorMessage String?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  business    Business?    @relation(fields: [businessId], references: [id], onDelete: SetNull)
+  requestedBy User?        @relation(fields: [requestedById], references: [id], onDelete: SetNull)
+
+  @@index([businessId, startedAt])
+  @@index([status, startedAt])
+  @@index([expiresAt])
 }
 
 model Notification {

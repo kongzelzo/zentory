@@ -15,9 +15,9 @@ type Business = {
 };
 
 const fallbackBusinesses: Business[] = [
-  { id: "demo-market", name: "ร้าน Demo Market", createdAt: new Date().toISOString(), subscription: { plan: { name: "Free" } }, members: [{}, {}] },
-  { id: "coffee-lab", name: "Coffee Lab", createdAt: new Date().toISOString(), subscription: { plan: { name: "Pro" } }, members: [{}, {}, {}] },
-  { id: "mini-mart", name: "Mini Mart สาขา 1", createdAt: new Date().toISOString(), subscription: { plan: { name: "Free" } }, members: [{}] }
+  { id: "demo-market", name: "ร้าน Demo Market", createdAt: new Date().toISOString(), subscription: { plan: { name: "Starter" } }, members: [{}, {}] },
+  { id: "coffee-lab", name: "Coffee Lab", createdAt: new Date().toISOString(), subscription: { plan: { name: "Professional" } }, members: [{}, {}, {}] },
+  { id: "mini-mart", name: "Mini Mart สาขา 1", createdAt: new Date().toISOString(), subscription: { plan: { name: "Starter" } }, members: [{}] }
 ];
 
 export function AdminPage() {
@@ -35,7 +35,7 @@ export function AdminPage() {
 
   const activeStores = rows.length;
   const totalUsers = rows.reduce((sum, business) => sum + business.members.length, 0);
-  const proStores = rows.filter((business) => business.subscription?.plan.name === "Pro").length;
+  const professionalStores = rows.filter((business) => business.subscription?.plan.name === "Professional").length;
 
   return (
     <div className="space-y-6">
@@ -61,7 +61,7 @@ export function AdminPage() {
           </div>
           <div className="mt-5 space-y-2 text-sm">
             {[
-              ["ตรวจสลิปแพ็กเกจ Pro", "/admin/payments/payment-001"],
+              ["ตรวจสลิปแพ็กเกจ Professional", "/admin/payments/payment-001"],
               ["ตอบ ticket ลูกค้าใหม่", "/admin/support-tickets/ticket-001"],
               ["ประกาศ maintenance รอบถัดไป", "/admin/announcements/new"]
             ].map(([label, to]) => (
@@ -77,7 +77,7 @@ export function AdminPage() {
       <section className="grid gap-4 md:grid-cols-4">
         <Metric icon={Store} label="ร้านทั้งหมด" value={String(activeStores)} />
         <Metric icon={Users} label="ผู้ใช้ทั้งหมด" value={String(totalUsers)} />
-        <Metric icon={CreditCard} label="ร้าน Pro" value={String(proStores)} />
+        <Metric icon={CreditCard} label="ร้าน Professional" value={String(professionalStores)} />
         <Metric icon={LifeBuoy} label="Ticket เปิด" value="3" />
       </section>
 
@@ -103,10 +103,11 @@ export function AdminPage() {
                     <td className="p-3"><span className="rounded bg-stone-100 px-2 py-1 text-xs font-black">{business.subscription?.plan.name ?? "-"}</span></td>
                     <td className="p-3">{business.createdAt ? thaiDate(business.createdAt) : "-"}</td>
                     <td className="p-3">
-                      <div className="flex gap-2">
-                        <Button variant="secondary" onClick={() => mutation.mutate({ id: business.id, planCode: "FREE" })}>Free</Button>
-                        <Button onClick={() => mutation.mutate({ id: business.id, planCode: "PRO" })}>Pro</Button>
-                      </div>
+	                      <div className="flex gap-2">
+	                        <Button variant="secondary" onClick={() => mutation.mutate({ id: business.id, planCode: "STARTER" })}>Starter</Button>
+	                        <Button onClick={() => mutation.mutate({ id: business.id, planCode: "PROFESSIONAL" })}>Professional</Button>
+	                        <Button variant="secondary" onClick={() => mutation.mutate({ id: business.id, planCode: "MULTI_BRANCH" })}>Multi-Branch</Button>
+	                      </div>
                     </td>
                   </tr>
                 ))}
@@ -118,7 +119,7 @@ export function AdminPage() {
           <h2 className="text-xl font-black">ทางลัดแอดมิน</h2>
           <div className="mt-4 space-y-2">
             {[
-              ["/admin/plans/pro/edit", "แก้แพ็กเกจ Pro"],
+              ["/admin/plans/professional/edit", "แก้แพ็กเกจ Professional"],
               ["/admin/payments/payment-001", "ตรวจการชำระเงิน"],
               ["/admin/impersonation", "เข้าใช้งานแทนร้าน"],
               ["/admin/system-logs", "ดู system logs"]

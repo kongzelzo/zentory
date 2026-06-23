@@ -113,12 +113,47 @@ describe("filterSidebarNavGroups", () => {
     expect(cashierLabels).not.toContain("ตั้งค่าสาขา");
   });
 
+  it("shows audit log only to owners", () => {
+    const ownerLabels = filterSidebarNavGroups(appNavGroups, "", false, noPermissions, "OWNER").flatMap((group) => group.items.map((item) => item.label));
+    const managerLabels = filterSidebarNavGroups(appNavGroups, "", false, noPermissions, "MANAGER").flatMap((group) => group.items.map((item) => item.label));
+    const branchManagerLabels = filterSidebarNavGroups(appNavGroups, "", false, noPermissions, "BRANCH_MANAGER").flatMap((group) => group.items.map((item) => item.label));
+
+    expect(ownerLabels).toContain("Audit Log");
+    expect(managerLabels).not.toContain("Audit Log");
+    expect(branchManagerLabels).not.toContain("Audit Log");
+  });
+
   it("keeps branch staff as an in-page section instead of a separate sidebar item", () => {
     const sidebarItems = filterSidebarNavGroups(appNavGroups, "", false, { ...noPermissions, "members.manage": true }, "OWNER")
       .flatMap((group) => group.items);
 
     expect(sidebarItems.map((item) => item.label)).not.toContain("พนักงาน");
     expect(sidebarItems.map((item) => item.to)).not.toContain("/app/branch-settings?section=staff");
+  });
+
+  it("hides non-core navigation while in demo mode", () => {
+    const labels = filterSidebarNavGroups(appNavGroups, "", false, {
+      ...noPermissions,
+      "products.read": true,
+      "inventory.read": true,
+      "inventory.receive": true,
+      "inventory.adjust": true,
+      "inventory.movements.read": true,
+      "sales.create": true,
+      "sales.read": true,
+      "reports.dashboard.read": true,
+      "reports.sales.read": true,
+      "reports.stock.read": true,
+      "warehouses.manage": true
+    }, "OWNER", false, true).flatMap((group) => group.items.map((item) => item.label));
+
+    expect(labels).toContain("ขายหน้าร้าน / POS");
+    expect(labels).toContain("สินค้า");
+    expect(labels).toContain("รายงานยอดขาย");
+    expect(labels).not.toContain("Audit Log");
+    expect(labels).not.toContain("Backup");
+    expect(labels).not.toContain("API Keys");
+    expect(labels).not.toContain("กำไรขั้นต้น");
   });
 });
 

@@ -1,15 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, BarChart3, Boxes, ClipboardList, CreditCard, ImageIcon, Package, PackageX, ReceiptText, ShoppingBasket, Wallet } from "lucide-react";
+import { AlertTriangle, BarChart3, Boxes, ClipboardList, CreditCard, Download, ImageIcon, Package, PackageX, ReceiptText, ShoppingBasket, Wallet } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Bar, BarChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dropdown } from "../components/Dropdown";
-import { api, post } from "../lib/api";
+import { api, downloadApi, post } from "../lib/api";
 import { baht, number, thaiDate } from "../lib/format";
 import { getProductDisplayName, getProductImageUrl } from "../lib/products";
-import { getPaymentMethodLabel } from "../lib/sales";
+import { buildSalesQuery, getPaymentMethodLabel, type SalesDateFilter } from "../lib/sales";
 import { useWorkingBranch } from "../state/working-branch";
 
 type SalesBreakdown = { label: string; total: number; count: number };
@@ -76,6 +76,13 @@ const stockUrgencyFilters: Array<{ value: StockUrgencyFilter; label: string }> =
   { value: "OUT", label: "หมดสต็อก" },
   { value: "LOW", label: "ใกล้หมด" },
   { value: "FAST_MOVING", label: "ขายเร็ว" }
+];
+
+const salesDateFilterOptions: Array<{ value: SalesDateFilter; label: string }> = [
+  { value: "today", label: "วันนี้" },
+  { value: "7d", label: "7 วันล่าสุด" },
+  { value: "30d", label: "30 วันล่าสุด" },
+  { value: "all", label: "ทั้งหมด" }
 ];
 
 const reasonLabels: Record<StockPlanningReason, string> = {
@@ -360,9 +367,19 @@ function ReplenishmentGroup({
 
 export function SalesReportPage() {
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
+  const [dateFilter, setDateFilter] = useState<SalesDateFilter>("30d");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [exportError, setExportError] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+  const warehouses = useQuery({ queryKey: ["warehouses"], queryFn: () => api<WarehouseOption[]>("/warehouses") });
+  const warehouseOptions = useMemo(() => (warehouses.data ?? []).filter((warehouse) => !workingBranchId || warehouse.branchId === workingBranchId || warehouse.branch?.id === workingBranchId), [warehouses.data, workingBranchId]);
+  useEffect(() => {
+    if (warehouseId && !warehouseOptions.some((warehouse) => warehouse.id === warehouseId)) setWarehouseId("");
+  }, [warehouseId, warehouseOptions]);
+  const queryString = useMemo(() => buildSalesQuery({ page: 1, limit: 100, dateFilter, branchId: workingBranchId, warehouseId, allTime: dateFilter === "all" }), [dateFilter, warehouseId, workingBranchId]);
   const query = useQuery({
-    queryKey: ["sales-report", workingBranchId],
-    queryFn: () => api<SalesReport | LegacySaleGroup[]>(locationReportPath("/reports/sales", { branchId: workingBranchId, warehouseId: "" })),
+    queryKey: ["sales-report", queryString],
+    queryFn: () => api<SalesReport | LegacySaleGroup[]>(`/reports/sales?${queryString}`),
     enabled: Boolean(workingBranchId)
   });
   useEffect(() => {
@@ -374,16 +391,66 @@ export function SalesReportPage() {
   const recentSales = report?.recentSales ?? [];
   const dailySales = report?.dailySales ?? [];
   const maxPaymentTotal = Math.max(...paymentMethods.map((row) => row.total), 1);
+  const hasFilters = dateFilter !== "30d" || warehouseId !== "";
+
+  async function exportCsv() {
+    setIsExporting(true);
+    setExportError("");
+    try {
+      const blob = await downloadApi(`/sales/export?${queryString}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `sales-report-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "ส่งออกรายงานไม่สำเร็จ");
+    } finally {
+      setIsExporting(false);
+    }
+  }
 
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h1 className="text-3xl font-black">รายงานยอดขาย</h1>
-          <p className="text-stone-600">สรุปยอดขาย 30 วันล่าสุดของสาขาที่ใช้งาน แยกตามวัน ช่องทาง และสินค้าขายดี</p>
+          <p className="text-stone-600">สรุปยอดขายตามช่วงเวลาและสาขาที่ใช้งาน แยกตามวัน ช่องทาง และสินค้าขายดี</p>
         </div>
-        <Link to="/app/sales"><Button variant="secondary" icon={<ReceiptText size={16} />}>ดูประวัติใบขาย</Button></Link>
+        <div className="flex flex-wrap gap-2">
+          <Button type="button" variant="secondary" icon={<Download size={16} />} onClick={exportCsv} disabled={isExporting || !report || report.summary.receiptCount === 0}>
+            {isExporting ? "กำลังส่งออก..." : "Export CSV"}
+          </Button>
+          <Link to="/app/sales"><Button variant="secondary" icon={<ReceiptText size={16} />}>ดูประวัติใบขาย</Button></Link>
+        </div>
       </div>
+
+      <Card className="space-y-3">
+        <div className="grid gap-3 md:grid-cols-[180px_220px_1fr]">
+          <Dropdown
+            options={salesDateFilterOptions}
+            value={dateFilter}
+            onValueChange={(value) => setDateFilter(value as SalesDateFilter)}
+            buttonClassName="h-11"
+            aria-label="เลือกช่วงเวลารายงานยอดขาย"
+          />
+          <Dropdown
+            options={[{ value: "", label: "ทุกคลังในสาขา" }, ...warehouseOptions.map((warehouse) => ({ value: warehouse.id, label: warehouse.name }))]}
+            value={warehouseId}
+            onValueChange={setWarehouseId}
+            buttonClassName="h-11"
+            aria-label="เลือกคลังสำหรับรายงานยอดขาย"
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-stone-500">นับเฉพาะใบขายที่ชำระแล้ว</p>
+            {hasFilters ? <Button type="button" variant="ghost" onClick={() => { setDateFilter("30d"); setWarehouseId(""); }}>ล้างตัวกรอง</Button> : null}
+          </div>
+        </div>
+        {exportError ? <p className="text-sm font-semibold text-red-700">{exportError}</p> : null}
+      </Card>
 
       {!workingBranchId ? <Card>กำลังเตรียมสาขาที่ใช้งาน...</Card> : null}
       {query.isLoading ? <Card>กำลังโหลดรายงานยอดขาย...</Card> : null}
@@ -427,7 +494,7 @@ export function SalesReportPage() {
             maxTotal={maxPaymentTotal}
           />
 
-          <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+          <div className="grid min-w-0 gap-5 xl:grid-cols-[0.9fr_1.1fr]">
             <Card className="space-y-4">
               <div>
                 <h2 className="text-lg font-black text-ink">สินค้าขายดี</h2>
@@ -448,12 +515,12 @@ export function SalesReportPage() {
               </div>
             </Card>
 
-            <Card className="space-y-4">
+            <Card className="min-w-0 space-y-4">
               <div>
                 <h2 className="text-lg font-black text-ink">รายการขายล่าสุด</h2>
                 <p className="text-sm text-stone-500">ใบขายล่าสุดที่รวมอยู่ในรายงาน</p>
               </div>
-              <div className="table-shell -mx-5 border-x-0 shadow-none sm:mx-0 sm:border-x sm:shadow-sm">
+              <div className="table-shell -mx-5 max-w-[calc(100%+2.5rem)] border-x-0 shadow-none sm:mx-0 sm:max-w-full sm:border-x sm:shadow-sm">
                 <table className="w-full min-w-[680px] text-left text-sm">
                   <thead className="bg-stone-50 text-stone-500">
                     <tr>

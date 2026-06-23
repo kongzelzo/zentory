@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { localDemo } from "./local-demo";
+import { createDemoSession, isDemoSession, localDemo, resetLocalDemo, startLocalDemo } from "./local-demo";
 
 const demoKey = "zentory.local-demo.v1";
 const storeBranchId = "local_store_branch_main";
@@ -169,5 +169,84 @@ describe("local demo branch scope", () => {
     expect(products.find((product) => product.id === "product-1")?.balances[0]).toEqual({ warehouseId, quantity: 8 });
     expect(movements[0]).toEqual(expect.objectContaining({ type: "ADJUSTMENT_OUT", quantity: 2, targetQuantity: 8 }));
     expect(movements[0].reason).toContain("นับสต็อก");
+  });
+});
+
+describe("explicit local demo mode", () => {
+  beforeEach(() => {
+    stubLocalStorage();
+  });
+
+  it("creates a complete owner session for the seeded demo store", () => {
+    const session = startLocalDemo();
+
+    expect(isDemoSession(session)).toBe(true);
+    expect(session).toMatchObject({
+      accessToken: "local-demo-access",
+      refreshToken: "local-demo-refresh",
+      user: { id: "local_demo_user", name: "Demo User", email: "demo@zentory.local" },
+      business: {
+        id: "local_demo_business",
+        name: "ร้านตัวอย่าง Zentory",
+        role: "OWNER",
+        onboardingCompleted: true,
+        onboardingProgress: {
+          setupStore: true,
+          firstProduct: true,
+          stockIn: true,
+          firstSale: true,
+          firstReport: true
+        },
+        assignedBranchIds: [storeBranchId]
+      }
+    });
+    expect(session.business?.effectivePermissions?.["sales.create"]).toBe(true);
+    expect(session.business?.effectivePermissions?.["subscription.manage"]).toBe(true);
+  });
+
+  it("seeds one branch, one warehouse, products, stock, and recent sales", async () => {
+    startLocalDemo();
+
+    const business = await localDemo<{ branches: Array<{ id: string }>; subscription: { plan: { name: string } } }>("/businesses/current");
+    const branches = await localDemo<Array<{ id: string; warehouses: Array<{ id: string }> }>>("/branches");
+    const warehouses = await localDemo<Array<{ id: string }>>("/warehouses");
+    const products = await localDemo<Array<{ id: string; balances: Array<{ quantity: number }> }>>("/products");
+    const sales = await localDemo<{ data: Array<{ id: string }>; summary: { total: number } }>("/sales");
+    const stock = await localDemo<Array<{ productId: string; quantity: number }>>("/reports/stock");
+
+    expect(business.branches).toHaveLength(1);
+    expect(business.subscription.plan.name).toBe("Starter Demo");
+    expect(branches).toHaveLength(1);
+    expect(branches[0].warehouses).toHaveLength(1);
+    expect(warehouses).toHaveLength(1);
+    expect(products).toHaveLength(10);
+    expect(products.every((product) => product.balances.length > 0)).toBe(true);
+    expect(stock).toHaveLength(10);
+    expect(sales.data.length).toBeGreaterThanOrEqual(3);
+    expect(sales.summary.total).toBeGreaterThan(0);
+  });
+
+  it("reset restores the seeded stock after local changes", async () => {
+    startLocalDemo();
+    const before = await localDemo<Array<{ id: string; balances: Array<{ quantity: number }> }>>("/products?status=ACTIVE");
+    const product = before[0];
+    const beforeQuantity = product.balances[0].quantity;
+
+    await localDemo("/sales", {
+      method: "POST",
+      body: JSON.stringify({ warehouseId, items: [{ productId: product.id, quantity: 1 }], paymentMethod: "CASH" })
+    });
+    const afterSale = await localDemo<Array<{ id: string; balances: Array<{ quantity: number }> }>>("/products?status=ACTIVE");
+    expect(afterSale.find((item) => item.id === product.id)?.balances[0].quantity).toBe(beforeQuantity - 1);
+
+    const resetSession = resetLocalDemo();
+    const afterReset = await localDemo<Array<{ id: string; balances: Array<{ quantity: number }> }>>("/products?status=ACTIVE");
+
+    expect(isDemoSession(resetSession)).toBe(true);
+    expect(afterReset.find((item) => item.id === product.id)?.balances[0].quantity).toBe(beforeQuantity);
+  });
+
+  it("recognizes freshly created demo sessions without touching storage", () => {
+    expect(isDemoSession(createDemoSession())).toBe(true);
   });
 });

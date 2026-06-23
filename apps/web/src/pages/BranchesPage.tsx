@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Boxes, Building2, CheckCircle2, ClipboardList, Pencil, Plus, Repeat, Save, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Boxes, Building2, CheckCircle2, ClipboardList, CreditCard, Pencil, Plus, Repeat, Save, Search, SlidersHorizontal, Trash2, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
@@ -10,6 +10,7 @@ import {
   branchTypeLabel,
   buildBranchSummaries,
   buildBranchTotals,
+  canCreateWarehouseForPlan,
   filterBranchSummaries,
   stockStatusOf,
   type BranchBalanceRecord,
@@ -41,6 +42,15 @@ type StoreBranch = {
   note?: string | null;
   isDefault?: boolean;
   warehouses?: Branch[];
+};
+
+type CurrentBusiness = {
+  subscription?: {
+    plan?: {
+      name: string;
+      warehouseLimit?: number | null;
+    };
+  } | null;
 };
 
 type Balance = BranchBalanceRecord & {
@@ -687,23 +697,38 @@ export function BranchEditPage() {
 export function WarehousesPage() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
+  const session = useAuth((state) => state.session);
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
   const requestedBranchId = searchParams.get("branchId") ?? "";
   const [form, setForm] = useState<BranchForm>(emptyBranchForm);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
+  const [isWarehouseLimitOpen, setIsWarehouseLimitOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<BranchStatusFilter>("all");
   const storeBranches = useQuery({ queryKey: ["branches"], queryFn: () => api<StoreBranch[]>("/branches") });
   const selectedBranchId = requestedBranchId || workingBranchId || storeBranches.data?.[0]?.id || "";
   const branchScopeQuery = selectedBranchId ? `?branchId=${encodeURIComponent(selectedBranchId)}` : "";
   const warehouses = useQuery({ queryKey: ["warehouses", selectedBranchId], queryFn: () => api<Branch[]>(`/warehouses${branchScopeQuery}`), enabled: Boolean(selectedBranchId) });
+  const businessWarehouses = useQuery({ queryKey: ["warehouses", "business-scope", "limit-check"], queryFn: () => api<Branch[]>("/warehouses?scope=business") });
+  const currentBusiness = useQuery({ queryKey: ["business-current", "warehouse-limit"], queryFn: () => api<CurrentBusiness>("/businesses/current") });
   const balances = useQuery({ queryKey: ["inventory-balances", selectedBranchId], queryFn: () => api<Balance[]>(`/inventory/balances${branchScopeQuery}`), enabled: Boolean(selectedBranchId) });
 
   const summaries = useMemo(() => buildBranchSummaries(warehouses.data ?? [], balances.data ?? []), [warehouses.data, balances.data]);
   const filteredSummaries = useMemo(() => filterBranchSummaries(summaries, { search, status: statusFilter }), [summaries, search, statusFilter]);
   const totals = buildBranchTotals(summaries);
   const hasFilters = Boolean(search.trim()) || statusFilter !== "all";
+  const warehouseLimit = currentBusiness.data?.subscription?.plan?.warehouseLimit ?? undefined;
+  const planName = currentBusiness.data?.subscription?.plan?.name ?? "แพ็กเกจปัจจุบัน";
+  const businessWarehouseCount = businessWarehouses.data?.length ?? warehouses.data?.length ?? 0;
+  const canCreateWarehouse = canCreateWarehouseForPlan({
+    warehouseCount: businessWarehouseCount,
+    warehouseLimit,
+    allowedWarehouseIds: session?.business?.planAccess?.allowedWarehouseIds
+  });
+  const warehouseLimitText = warehouseLimit
+    ? `${planName} เพิ่มคลังได้สูงสุด ${number(warehouseLimit)} คลัง`
+    : `${planName} ไม่สามารถเพิ่มคลังได้ในตอนนี้`;
 
   const saveBranch = useMutation({
     mutationFn: (body: BranchForm) => editingId ? patch(`/warehouses/${editingId}`, body) : post("/warehouses", body),
@@ -752,6 +777,10 @@ export function WarehousesPage() {
   }
 
   function startCreate(initial?: Partial<BranchForm>) {
+    if (!canCreateWarehouse) {
+      setIsWarehouseLimitOpen(true);
+      return;
+    }
     setEditingId(null);
     setForm({ ...emptyBranchForm, branchId: selectedBranchId, ...initial });
     setIsFormOpen(true);
@@ -887,6 +916,30 @@ export function WarehousesPage() {
               </form>
             </div>
           </aside>
+        </div>
+      ) : null}
+
+      {isWarehouseLimitOpen ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-ink/45 p-4">
+          <div className="w-full max-w-md rounded-lg bg-white p-5 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-amber-50 text-amber-700">
+                <AlertTriangle size={22} />
+              </span>
+              <div className="min-w-0">
+                <h2 className="text-xl font-black text-ink">เพิ่มคลังไม่ได้</h2>
+                <p className="mt-2 text-sm font-semibold leading-6 text-stone-700">{warehouseLimitText}</p>
+                <p className="mt-1 text-sm leading-6 text-stone-600">กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มคลัง หรือลบคลังที่ไม่ได้ใช้งานและยังไม่มีประวัติรายการก่อนสร้างคลังใหม่</p>
+              </div>
+              <Button type="button" variant="ghost" className="ml-auto h-9 w-9 shrink-0 px-0" onClick={() => setIsWarehouseLimitOpen(false)} aria-label="ปิด" icon={<X size={17} />} />
+            </div>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => setIsWarehouseLimitOpen(false)}>ปิด</Button>
+              <Link to="/app/profile/billing" onClick={() => setIsWarehouseLimitOpen(false)}>
+                <Button type="button" icon={<CreditCard size={16} />}>อัปเกรดแพ็กเกจ</Button>
+              </Link>
+            </div>
+          </div>
         </div>
       ) : null}
 

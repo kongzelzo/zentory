@@ -8,8 +8,9 @@ import { BarcodeScanner } from "../components/BarcodeScanner";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { Dropdown } from "../components/Dropdown";
-import { api, post } from "../lib/api";
+import { api, downloadApi, patch, post } from "../lib/api";
 import { thaiDate } from "../lib/format";
+import { useAuth } from "../state/auth";
 
 const pageCopy: Record<string, { title: string; subtitle: string; fields: string[]; rows: string[][] }> = {
   suppliers: {
@@ -201,6 +202,9 @@ export function BarcodePage() {
 }
 
 export function ImportExportPage() {
+  const [exporting, setExporting] = useState("");
+  const [exportError, setExportError] = useState("");
+
   function downloadTemplate() {
     const rows = [
       ["name", "sku", "barcode", "unit", "categoryName", "brandName", "costPrice", "salePrice", "minStock", "initialStock"],
@@ -214,6 +218,24 @@ export function ImportExportPage() {
     link.download = "zentory-product-template.csv";
     link.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function exportExcel(type: "products" | "stock" | "sales" | "movements") {
+    setExporting(type);
+    setExportError("");
+    try {
+      const blob = await downloadApi(`/reports/export.xls?type=${type}`);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `zentory-${type}.xls`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Export ไม่สำเร็จ");
+    } finally {
+      setExporting("");
+    }
   }
 
   return (
@@ -237,26 +259,50 @@ export function ImportExportPage() {
           <Download className="text-ember" />
           <h2 className="mt-4 text-xl font-black">ส่งออกข้อมูล</h2>
           <p className="mt-2 text-stone-600">ใช้ส่งออกข้อมูลสินค้า สต็อก ยอดขาย และ movement history เพื่อสำรองหรือนำไปตรวจนอกร้าน</p>
-          <div className="mt-4 rounded-md bg-stone-100 p-3 text-sm font-semibold text-stone-700">สถานะ: เตรียมใช้งาน ปุ่ม export จริงจะเชื่อมกับ API รอบถัดไป</div>
-          <Button className="mt-4" variant="secondary" icon={<FileSpreadsheet size={16} />} disabled>Export Excel</Button>
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {(["products", "stock", "sales", "movements"] as const).map((type) => (
+              <Button key={type} type="button" variant="secondary" icon={<FileSpreadsheet size={16} />} disabled={Boolean(exporting)} onClick={() => exportExcel(type)}>
+                {exporting === type ? "กำลัง Export..." : exportLabel(type)}
+              </Button>
+            ))}
+          </div>
+          {exportError ? <p className="mt-3 text-sm font-semibold text-red-700">{exportError}</p> : null}
         </Card>
       </div>
     </div>
   );
 }
 
+function exportLabel(type: "products" | "stock" | "sales" | "movements") {
+  return {
+    products: "Export สินค้า",
+    stock: "Export สต็อก",
+    sales: "Export ยอดขาย",
+    movements: "Export Movement"
+  }[type];
+}
+
 export function BillingPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [selectedFreeBranchId, setSelectedFreeBranchId] = useState("");
+  const [selectedFreeWarehouseId, setSelectedFreeWarehouseId] = useState("");
   const business = useQuery({ queryKey: ["business-current", "billing"], queryFn: () => api<BillingBusiness>("/businesses/current") });
+  const branches = useQuery({
+    queryKey: ["billing-branches"],
+    queryFn: () => api<BillingBranch[]>("/branches"),
+    enabled: Boolean(business.data?.planAccess?.isLimited)
+  });
   const subscription = business.data?.subscription;
+  const planAccess = business.data?.planAccess;
   const paymentMode = subscription?.paymentMode;
-  const periodEnd = subscription?.currentPeriodEnd ?? subscription?.expiresAt;
-  const currentPlanName = subscription?.plan.name ?? "Free";
-  const currentPlanLimits = subscription?.plan ?? { productLimit: 30, userLimit: 1, branchLimit: 1 };
+  const periodEnd = subscription?.status === "PAST_DUE" ? subscription?.graceEndsAt : subscription?.currentPeriodEnd ?? subscription?.expiresAt;
+  const currentPlanName = subscription?.plan.name ?? "Starter";
+  const currentPlanCode = subscription?.plan.code?.toLowerCase() ?? currentPlanName.toLowerCase().replace(/-/g, "_");
+  const currentPlanLimits = subscription?.plan ?? { productLimit: 200, userLimit: 2, branchLimit: 1, warehouseLimit: 1 };
   const paymentLabel = billingPaymentLabel(currentPlanName, paymentMode, subscription?.cancelAtPeriodEnd);
-  const periodLabel = subscription?.cancelAtPeriodEnd ? "ใช้ได้ถึง" : paymentMode === "PROMPTPAY_ONE_TIME" ? "หมดอายุ/ต่ออายุภายใน" : paymentMode === "STRIPE_SUBSCRIPTION" ? "รอบบิลถัดไป" : "สถานะล่าสุด";
-  const visibleBillingPlans = billingPlans.filter((plan) => currentPlanName.toLowerCase() === "free" || plan.code !== "free");
+  const periodLabel = subscription?.status === "PAST_DUE" ? "ชำระภายใน" : subscription?.cancelAtPeriodEnd ? "ใช้ได้ถึง" : paymentMode === "PROMPTPAY_ONE_TIME" ? "หมดอายุ/ต่ออายุภายใน" : paymentMode === "STRIPE_SUBSCRIPTION" ? "รอบบิลถัดไป" : "สถานะล่าสุด";
+  const visibleBillingPlans = billingPlans;
   const portalMutation = useMutation({
     mutationFn: () => post<{ url: string }>("/payments/portal", {}),
     onSuccess: (result) => {
@@ -267,6 +313,23 @@ export function BillingPage() {
     mutationFn: () => post("/payments/subscription/cancel-at-period-end", {}),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["business-current"] })
   });
+  const selectionMutation = useMutation({
+    mutationFn: () => patch("/billing/plan-limited-selection", {
+      branchId: selectedFreeBranchId || branches.data?.[0]?.id,
+      warehouseId: selectedFreeWarehouseId || branches.data?.find((branch) => branch.id === (selectedFreeBranchId || branches.data?.[0]?.id))?.warehouses?.[0]?.id
+    }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["business-current"] });
+      queryClient.invalidateQueries({ queryKey: ["business-current", "billing"] });
+      queryClient.invalidateQueries({ queryKey: ["billing-branches"] });
+    }
+  });
+  const branchOptions = (branches.data ?? []).filter((branch) => branch.status !== "INACTIVE").map((branch) => ({ value: branch.id, label: branch.name }));
+  const activeBranchId = selectedFreeBranchId || branchOptions[0]?.value || "";
+  const warehouseOptions = (branches.data ?? [])
+    .find((branch) => branch.id === activeBranchId)
+    ?.warehouses?.filter((warehouse) => warehouse.status !== "INACTIVE")
+    .map((warehouse) => ({ value: warehouse.id, label: warehouse.name })) ?? [];
 
   return (
     <div className="space-y-5">
@@ -295,6 +358,7 @@ export function BillingPage() {
             <p className="mt-2">สินค้า {currentPlanLimits.productLimit} รายการ</p>
             <p>ผู้ใช้ {currentPlanLimits.userLimit} คน</p>
             <p>สาขา {currentPlanLimits.branchLimit} สาขา</p>
+            <p>คลัง {currentPlanLimits.warehouseLimit ?? 1} คลัง</p>
           </div>
         </div>
         <div className="mt-5 grid gap-3 border-t border-stone-100 pt-5 md:grid-cols-3">
@@ -313,6 +377,43 @@ export function BillingPage() {
         </div>
       </Card>
 
+      {planAccess?.isLimited || subscription?.status === "PAST_DUE" ? (
+        <Card className="border-amber-200 bg-amber-50/70">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-1 shrink-0 text-amber-700" />
+            <div>
+              <h2 className="text-xl font-black text-ink">{subscription?.status === "PAST_DUE" ? "บัญชีอยู่ในช่วงผ่อนผันการชำระเงิน" : "บัญชีถูกจำกัดตามแพ็กเกจ"}</h2>
+              <p className="mt-1 text-sm font-semibold leading-6 text-stone-700">
+                ข้อมูลเดิมยังปลอดภัย แต่ส่วนที่เกินแพ็กเกจจะถูกจำกัดการทำงานจนกว่าจะเลือกสาขาที่ใช้งานต่อหรืออัปเกรดแพ็กเกจ
+              </p>
+            </div>
+          </div>
+          {planAccess ? (
+            <div className="mt-5 grid gap-3 md:grid-cols-4">
+              <LimitTile label="สาขาถูกจำกัด" value={planAccess.lockedBranchIds.length} total={planAccess.counts.branches} />
+              <LimitTile label="คลังถูกจำกัด" value={planAccess.lockedWarehouseIds.length} total={planAccess.counts.warehouses} />
+              <LimitTile label="พนักงานถูกจำกัด" value={planAccess.lockedMemberIds.length} total={planAccess.counts.members} />
+              <LimitTile label="สินค้าเกินแพ็กเกจ" value={planAccess.lockedProductCount} total={planAccess.counts.products} />
+            </div>
+          ) : null}
+          {planAccess?.isLimited && branchOptions.length > 0 ? (
+            <div className="mt-5 grid gap-3 border-t border-amber-200 pt-5 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] md:items-end">
+              <label className="grid gap-1.5">
+                <span className="text-sm font-black text-stone-700">สาขาที่ใช้ต่อในแพ็กเกจปัจจุบัน</span>
+                <Dropdown options={branchOptions} value={activeBranchId} onValueChange={(value) => { setSelectedFreeBranchId(value); setSelectedFreeWarehouseId(""); }} />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-sm font-black text-stone-700">คลังที่ใช้ต่อ</span>
+                <Dropdown options={warehouseOptions} value={selectedFreeWarehouseId || warehouseOptions[0]?.value || ""} onValueChange={setSelectedFreeWarehouseId} />
+              </label>
+              <Button type="button" onClick={() => selectionMutation.mutate()} disabled={selectionMutation.isPending || !activeBranchId}>
+                {selectionMutation.isPending ? "กำลังบันทึก..." : "บันทึกการเลือก"}
+              </Button>
+            </div>
+          ) : null}
+        </Card>
+      ) : null}
+
       <div className="space-y-3">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
           <div>
@@ -320,9 +421,9 @@ export function BillingPage() {
             <p className="text-sm font-semibold text-stone-600">เลือกแพ็กเกจที่ต้องการ แล้วค่อยเลือกวิธีชำระเงินในหน้าถัดไป</p>
           </div>
         </div>
-        <div className="grid gap-4 lg:grid-cols-3">
+          <div className="grid gap-4 lg:grid-cols-3">
           {visibleBillingPlans.map((plan) => {
-            const isCurrent = plan.name.toLowerCase() === currentPlanName.toLowerCase();
+            const isCurrent = plan.code === currentPlanCode;
             return (
               <Card key={plan.code} className={`flex flex-col ${plan.highlight ? "border-leaf" : ""}`}>
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -342,26 +443,22 @@ export function BillingPage() {
                   ))}
                 </ul>
                 <div className="mt-auto pt-5">
-                  {isCurrent && plan.code === "free" ? (
-                    <Button type="button" className="w-full" variant="secondary" disabled>แพ็กเกจปัจจุบัน</Button>
-                  ) : isCurrent && paymentMode === "STRIPE_SUBSCRIPTION" ? (
+                  {isCurrent && paymentMode === "STRIPE_SUBSCRIPTION" ? (
                     <Button type="button" className="w-full" variant="secondary" onClick={() => portalMutation.mutate()} disabled={portalMutation.isPending}>
                       {portalMutation.isPending ? "กำลังเปิด Portal..." : "จัดการการต่ออายุ"}
                     </Button>
-                  ) : isCurrent && plan.checkoutPath ? (
+                  ) : isCurrent ? (
                     <Link to={plan.checkoutPath}>
                       <Button className="w-full" icon={<ArrowRight size={16} />}>
                         ต่ออายุ {plan.name}
                       </Button>
                     </Link>
-                  ) : plan.checkoutPath ? (
+                  ) : (
                     <Link to={plan.checkoutPath}>
                       <Button className="w-full" variant={plan.highlight ? "primary" : "secondary"} icon={<ArrowRight size={16} />}>
                         {plan.cta}
                       </Button>
                     </Link>
-                  ) : (
-                    <Button type="button" className="w-full" variant="secondary" disabled>{plan.cta}</Button>
                   )}
                 </div>
               </Card>
@@ -391,44 +488,88 @@ export function BillingPage() {
         </Card>
       ) : null}
 
-      {(business.error || portalMutation.error || cancelMutation.error) ? (
+      {(business.error || portalMutation.error || cancelMutation.error || selectionMutation.error) ? (
         <p className="rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700">
-          {(business.error ?? portalMutation.error ?? cancelMutation.error as Error)?.message}
+          {(business.error ?? portalMutation.error ?? cancelMutation.error ?? selectionMutation.error as Error)?.message}
         </p>
       ) : null}
     </div>
   );
 }
 
+function LimitTile({ label, value, total }: { label: string; value: number; total: number }) {
+  return (
+    <div className="rounded-md border border-amber-200 bg-white p-4">
+      <p className="text-sm font-bold text-stone-500">{label}</p>
+      <p className="mt-1 text-2xl font-black text-ink">{value}</p>
+      <p className="mt-1 text-xs font-bold text-stone-500">ทั้งหมด {total}</p>
+    </div>
+  );
+}
+
+export function PlanLimitedPage() {
+  const session = useAuth((state) => state.session);
+  const access = session?.business?.planAccess;
+  return (
+    <div className="mx-auto grid max-w-3xl gap-5">
+      <Card className="border-amber-200 bg-amber-50/70">
+        <div className="flex items-start gap-3">
+          <AlertTriangle className="mt-1 shrink-0 text-amber-700" />
+          <div>
+            <h1 className="text-2xl font-black text-ink">บัญชีนี้ถูกจำกัดตามแพ็กเกจ</h1>
+            <p className="mt-2 leading-7 text-stone-700">
+              สาขาหรือสิทธิ์พนักงานของคุณไม่ได้อยู่ในส่วนที่แพ็กเกจปัจจุบันเปิดให้ใช้งาน กรุณาติดต่อเจ้าของร้านเพื่อเลือกสาขาที่ใช้งานต่อหรืออัปเกรดแพ็กเกจ
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-md border border-amber-200 bg-white p-4">
+            <p className="text-sm font-bold text-stone-500">สถานะ</p>
+            <p className="mt-1 text-lg font-black text-ink">{access?.status ?? "-"}</p>
+          </div>
+          <div className="rounded-md border border-amber-200 bg-white p-4">
+            <p className="text-sm font-bold text-stone-500">สาขาที่เปิดให้ใช้</p>
+            <p className="mt-1 text-lg font-black text-ink">{access?.allowedBranchIds.length ?? 0}</p>
+          </div>
+        </div>
+      </Card>
+      <div className="flex flex-wrap gap-3">
+        <Link to="/app/profile/billing"><Button>ดูแพ็กเกจ</Button></Link>
+        <Link to="/app/profile"><Button variant="secondary">กลับไปโปรไฟล์</Button></Link>
+      </div>
+    </div>
+  );
+}
+
 const billingPlans = [
   {
-    code: "free",
-    name: "Free",
-    subtitle: "สำหรับเริ่มทดลองใช้",
-    price: "฿0/เดือน",
-    features: ["สินค้า 30 รายการ", "ผู้ใช้ 1 คน", "สาขาเดียว", "รายงานพื้นฐาน"],
-    cta: "แพ็กเกจพื้นฐาน",
-    checkoutPath: "",
+    code: "starter",
+    name: "Starter",
+    subtitle: "ร้านเล็กที่เริ่มใช้จริง",
+    price: "฿399/เดือน",
+    features: ["สินค้า 200 รายการ", "ผู้ใช้ 2 คน", "1 สาขา", "1 คลัง"],
+    cta: "เลือก Starter",
+    checkoutPath: "/checkout?plan=starter",
     highlight: false
   },
   {
-    code: "pro",
-    name: "Pro",
-    subtitle: "สำหรับร้านที่ใช้งานจริง",
-    price: "฿590/เดือน",
-    features: ["สินค้า 1,000 รายการ", "ผู้ใช้ 5 คน", "สูงสุด 5 สาขา", "POS และ barcode", "รายงานยอดขาย"],
-    cta: "เลือก Pro",
-    checkoutPath: "/checkout?plan=pro",
+    code: "professional",
+    name: "Professional",
+    subtitle: "ร้านเดียวที่บริหารจริงจัง",
+    price: "฿899/เดือน",
+    features: ["สินค้า 1,500 รายการ", "ผู้ใช้ 6 คน", "1 สาขา", "2 คลัง", "รายงานเต็มและ approval"],
+    cta: "เลือก Professional",
+    checkoutPath: "/checkout?plan=professional",
     highlight: true
   },
   {
-    code: "premium",
-    name: "Premium",
-    subtitle: "สำหรับร้านหลายสาขาหรือทีมใหญ่",
-    price: "คุยราคา",
-    features: ["หลายสาขา", "รายงานขั้นสูง", "สิทธิ์พนักงานละเอียด", "คุยรายละเอียดก่อนเปิดใช้งาน"],
-    cta: "คุย Premium",
-    checkoutPath: "/checkout?plan=premium",
+    code: "multi_branch",
+    name: "Multi-Branch",
+    subtitle: "ร้านที่เริ่มขยายหลายสาขา",
+    price: "฿1,790/เดือน",
+    features: ["สินค้า 3,000 รายการ", "ผู้ใช้ 12 คน", "เริ่มต้น 2 สาขา", "4 คลัง", "โอนสินค้าและรายงานแยกสาขา"],
+    cta: "เลือก Multi-Branch",
+    checkoutPath: "/checkout?plan=multi_branch",
     highlight: false
   }
 ] as const;
@@ -440,28 +581,47 @@ type BillingBusiness = {
     expiresAt?: string | null;
     currentPeriodEnd?: string | null;
     cancelAtPeriodEnd?: boolean;
-    plan: { name: string; productLimit: number; userLimit: number; branchLimit: number };
+    graceEndsAt?: string | null;
+    plan: { code?: string; name: string; productLimit: number; userLimit: number; branchLimit: number; warehouseLimit?: number };
   } | null;
+  planAccess?: {
+    status: string;
+    isLimited: boolean;
+    graceEndsAt?: string | null;
+    lockedBranchIds: string[];
+    lockedWarehouseIds: string[];
+    lockedMemberIds: string[];
+    lockedProductCount: number;
+    counts: { branches: number; warehouses: number; members: number; products: number };
+    plan: { branchLimit: number; warehouseLimit: number; userLimit: number; productLimit: number };
+  };
+};
+
+type BillingBranch = {
+  id: string;
+  name: string;
+  status?: "ACTIVE" | "INACTIVE";
+  warehouses?: Array<{ id: string; name: string; status?: "ACTIVE" | "INACTIVE" }>;
 };
 
 export function billingModeLabel(mode: "FREE" | "STRIPE_SUBSCRIPTION" | "PROMPTPAY_ONE_TIME", cancelAtPeriodEnd?: boolean) {
   if (mode === "STRIPE_SUBSCRIPTION") return cancelAtPeriodEnd ? "รายเดือนอัตโนมัติ: ยกเลิกแล้วและใช้ได้ถึงวันจบรอบ" : "รายเดือนอัตโนมัติผ่าน Stripe";
   if (mode === "PROMPTPAY_ONE_TIME") return "PromptPay แบบจ่ายครั้งเดียว";
-  return "Free";
+  return "เปิดใช้งานโดยระบบ";
 }
 
 function billingPaymentLabel(planName: string, mode?: "FREE" | "STRIPE_SUBSCRIPTION" | "PROMPTPAY_ONE_TIME", cancelAtPeriodEnd?: boolean) {
-  const isFreePlan = planName.toLowerCase() === "free";
-  if (!mode) return isFreePlan ? "Free" : "ยังไม่ระบุวิธีชำระเงิน";
-  if (mode === "FREE" && !isFreePlan) return "เปิดใช้งานโดยระบบ";
+  if (!mode) return "ยังไม่ระบุวิธีชำระเงิน";
   return billingModeLabel(mode, cancelAtPeriodEnd);
 }
 
 function billingStatusLabel(status?: string, paymentMode?: "FREE" | "STRIPE_SUBSCRIPTION" | "PROMPTPAY_ONE_TIME") {
   if (status === "ACTIVE") return "ใช้งานอยู่";
-  if (status === "PAST_DUE") return "รอชำระเงิน";
+  if (status === "PAST_DUE") return "รอชำระเงินในช่วงผ่อนผัน";
+  if (status === "LIMITED") return "จำกัดการใช้งานตามแพ็กเกจ";
   if (status === "CANCELED") return "ยกเลิกแล้ว";
-  if (paymentMode === "FREE") return "ใช้งาน Free";
+  if (status === "EXPIRED") return "หมดอายุ";
+  if (paymentMode === "FREE") return "เปิดใช้งานโดยระบบ";
   return "ยังไม่ระบุสถานะ";
 }
 

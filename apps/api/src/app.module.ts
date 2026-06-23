@@ -3,13 +3,18 @@ import { ConfigModule } from "@nestjs/config";
 import { JwtModule } from "@nestjs/jwt";
 import { resolve } from "path";
 import { AdminController } from "./admin/admin.controller";
+import { AuditController } from "./audit/audit.controller";
+import { BackupsController } from "./backups/backups.controller";
+import { BackupService } from "./backups/backup.service";
 import { AuthController } from "./auth/auth.controller";
 import { AuthService } from "./auth/auth.service";
+import { BillingController } from "./billing/billing.controller";
 import { BranchesController } from "./branches/branches.controller";
 import { MailerService } from "./auth/mailer.service";
 import { BusinessController } from "./business/business.controller";
 import { CategoriesController } from "./categories/categories.controller";
 import { InventoryController } from "./inventory/inventory.controller";
+import { HealthController } from "./health/health.controller";
 import { MembersController } from "./members/members.controller";
 import { OnboardingController } from "./onboarding/onboarding.controller";
 import { NotificationsController } from "./notifications/notifications.controller";
@@ -35,6 +40,10 @@ import { ZentoryService } from "./zentory.service";
   ],
   controllers: [
     AuthController,
+    HealthController,
+    AuditController,
+    BackupsController,
+    BillingController,
     BusinessController,
     CategoriesController,
     BranchesController,
@@ -49,6 +58,6 @@ import { ZentoryService } from "./zentory.service";
     MembersController,
     AdminController
   ],
-  providers: [AuthService, MailerService, ZentoryService, NotificationService, ProductImageStorageService, AuthGuard]
+  providers: [AuthService, MailerService, ZentoryService, NotificationService, ProductImageStorageService, BackupService, AuthGuard]
 })
 export class AppModule {}

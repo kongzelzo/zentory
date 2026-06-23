@@ -1,5 +1,5 @@
 import { resolveEffectivePermissions, type AuthSession, type EffectivePermissions, type Permission, type Role } from "@zentory/shared";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowRight,
@@ -40,6 +40,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-do
 import { api } from "../lib/api";
 import { getSessionDashboardPath } from "../lib/dashboard";
 import { number } from "../lib/format";
+import { clearLocalDemo, isDemoSession, resetLocalDemo } from "../lib/local-demo";
 import { getNotificationBranchId, notificationSummaryPath, type NotificationSummary } from "../lib/notifications";
 import { shouldShowOnboardingNav } from "../lib/onboarding";
 import { useAuth } from "../state/auth";
@@ -88,13 +89,18 @@ export const navGroups: Array<{ title: string; items: NavItem[] }> = [
     items: [
       { to: "/app/inventory/movements", label: "ประวัติสต็อก", icon: Repeat, permission: "inventory.movements.read" },
       { to: "/app/reports/stock", label: "สินค้าต้องเติม", icon: ChartColumn, permission: "reports.stock.read" },
-      { to: "/app/reports/sales", label: "รายงานยอดขาย", icon: ChartColumn, permission: "reports.sales.read" }
+      { to: "/app/reports/sales", label: "รายงานยอดขาย", icon: ChartColumn, permission: "reports.sales.read" },
+      { to: "/app/profit-loss", label: "กำไรขั้นต้น", icon: ChartColumn, permission: "reports.sales.read" }
     ]
   },
   {
     title: "จัดการร้าน",
     items: [
       { to: "/app/branch-settings", label: "ตั้งค่าสาขา", icon: Settings, roles: ["OWNER", "BRANCH_MANAGER"] },
+      { to: "/app/activity-approvals", label: "รออนุมัติ", icon: Shield, roles: ["OWNER", "MANAGER", "BRANCH_MANAGER"], permission: "inventory.read" },
+      { to: "/app/audit-log", label: "Audit Log", icon: History, roles: ["OWNER"] },
+      { to: "/app/import-export", label: "Import / Export", icon: History, roles: ["OWNER", "MANAGER"] },
+      { to: "/app/data-backup", label: "Backup", icon: History, roles: ["OWNER"] },
       { to: "/app/support", label: "ช่วยเหลือ", icon: HelpCircle }
     ]
   },
@@ -114,6 +120,27 @@ export const navGroups: Array<{ title: string; items: NavItem[] }> = [
 ];
 
 const allNavItems = navGroups.flatMap((group) => group.items);
+const demoCoreNavPaths = [
+  "/app/dashboard",
+  "/app/onboarding",
+  "/app/pos",
+  "/app/inventory/receipts",
+  "/app/inventory/adjustments",
+  "/app/products",
+  "/app/sales",
+  "/app/stock-search",
+  "/app/transfers",
+  "/app/inventory/movements",
+  "/app/reports/stock",
+  "/app/reports/sales",
+  "/app/warehouses",
+  "/app/support"
+];
+
+function isDemoNavItem(to: string) {
+  const [pathname] = to.split("?");
+  return demoCoreNavPaths.some((allowed) => pathname === allowed || pathname.startsWith(`${allowed}/`));
+}
 
 type CurrentBusiness = {
   name: string;
@@ -139,13 +166,15 @@ export function filterSidebarNavGroups<TItem extends { label: string; to: string
   showOnboarding: boolean,
   effectivePermissions?: EffectivePermissions,
   role?: Role,
-  isSystemAdmin = false
+  isSystemAdmin = false,
+  isDemoMode = false
 ) {
   const query = searchQuery.trim().toLocaleLowerCase();
 
   return groups
     .map((group) => {
       const visibleItems = group.items.filter((item) => {
+        if (isDemoMode && !isDemoNavItem(item.to)) return false;
         if (item.to === "/app/onboarding" && !showOnboarding) return false;
         if (item.roles && !isSystemAdmin && (!role || !item.roles.includes(role))) return false;
         if (!item.permission) return true;
@@ -174,7 +203,7 @@ export function getStoreMenuActions(effectivePermissions?: EffectivePermissions)
 function getCurrentPage(pathname: string) {
   if (pathname.startsWith("/app/dashboard")) return "Dashboard";
   if (pathname === "/app/notifications") return "ประวัติการแจ้งเตือนของฉัน";
-  if (pathname === "/app/transfers/requests") return "คำขอ/รอรับของโอน";
+  if (pathname === "/app/transfers/requests") return "รอยืนยันรับของ";
   if (pathname === "/app/settings/staff") return "พนักงานทั้งร้าน";
   if (pathname === "/app/branches") return "จัดการสาขา";
   if (pathname === "/app/billing" || pathname === "/app/profile/billing") return "แพ็กเกจบัญชี";
@@ -217,7 +246,7 @@ function NotificationShortcutRow({
   href: string;
   icon: typeof Bell;
   label: string;
-  tone: "red" | "amber" | "teal" | "sky" | "stone";
+  tone: "red" | "amber" | "teal" | "sky" | "indigo" | "stone";
   onOpen: (href: string) => void;
 }) {
   const toneClass = {
@@ -225,6 +254,7 @@ function NotificationShortcutRow({
     amber: "bg-amber-50 text-amber-700 ring-amber-100",
     teal: "bg-teal-50 text-teal-700 ring-teal-100",
     sky: "bg-sky-50 text-sky-700 ring-sky-100",
+    indigo: "bg-indigo-50 text-indigo-700 ring-indigo-100",
     stone: "bg-stone-100 text-stone-700 ring-stone-200"
   }[tone];
   return (
@@ -241,6 +271,7 @@ function NotificationShortcutRow({
 }
 
 export function AppShell() {
+  const queryClient = useQueryClient();
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [isQuickOpen, setIsQuickOpen] = useState(false);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
@@ -252,6 +283,7 @@ export function AppShell() {
   const notificationMenuRef = useRef<HTMLDivElement>(null);
   const workingBranchRef = useRef<HTMLDivElement>(null);
   const session = useAuth((state) => state.session);
+  const setSession = useAuth((state) => state.setSession);
   const clear = useAuth((state) => state.clear);
   const navigate = useNavigate();
   const location = useLocation();
@@ -259,14 +291,15 @@ export function AppShell() {
   const isStoreLevelPage = location.pathname === "/app/settings" || location.pathname === "/app/settings/staff" || location.pathname === "/app/branches" || location.pathname === "/app/profile" || location.pathname === "/app/profile/billing";
   const hideQuickActions = /^\/app\/products\/[^/]+\/edit$/.test(location.pathname) || location.pathname.startsWith("/app/pos");
   const userName = session?.user.name ?? "ผู้ใช้";
+  const isDemoMode = isDemoSession(session);
   const userEmail = session?.user.email ?? "";
   const storeName = session?.business?.name ?? "ยังไม่มีร้าน";
   const storeUid = session?.business?.id ?? "-";
   const effectivePermissions = getSessionPermissions(session);
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
   const setWorkingBranchId = useWorkingBranch((state) => state.setWorkingBranchId);
-  const visibleQuickActions = allNavItems.filter((item) => item.featured && (!item.permission || (effectivePermissions?.[item.permission] ?? true)));
-  const sidebar = <StoreSidebarContent onNavigate={() => setIsSidebarOpen(false)} />;
+  const visibleQuickActions = allNavItems.filter((item) => item.featured && (!isDemoMode || isDemoNavItem(item.to)) && (!item.permission || (effectivePermissions?.[item.permission] ?? true)));
+  const sidebar = <StoreSidebarContent isDemoMode={isDemoMode} onNavigate={() => setIsSidebarOpen(false)} />;
   const business = useQuery({
     queryKey: ["business"],
     queryFn: () => api<CurrentBusiness>("/businesses/current"),
@@ -308,16 +341,16 @@ export function AppShell() {
     },
     {
       count: notificationSummary?.transferRequestCount ?? 0,
-      href: "/app/transfers/requests",
-      icon: Repeat,
+      href: "/app/activity-approvals",
+      icon: Shield,
       label: "คำขอโอนสินค้า",
-      tone: "sky" as const
+      tone: "indigo" as const
     },
     {
       count: notificationSummary?.transferReceiveCount ?? 0,
       href: "/app/transfers/requests",
       icon: CheckCircle2,
-      label: "รอยืนยันรับสินค้า",
+      label: "รอยืนยันรับของ",
       tone: "sky" as const
     },
     {
@@ -333,9 +366,16 @@ export function AppShell() {
       icon: ClipboardList,
       label: "รอบนับสต็อกรอตรวจทาน",
       tone: "stone" as const
+    },
+    {
+      count: notificationSummary?.stockAdjustmentRequestCount ?? 0,
+      href: "/app/activity-approvals",
+      icon: Shield,
+      label: "งานรออนุมัติ: ปรับสต็อก",
+      tone: "indigo" as const
     }
   ].filter((item) => item.count > 0);
-  const storeMenuActions = getStoreMenuActions(effectivePermissions);
+  const storeMenuActions = isDemoMode ? { canEditStore: false } : getStoreMenuActions(effectivePermissions);
 
   useEffect(() => {
     function handlePointerDown(event: MouseEvent | TouchEvent) {
@@ -371,8 +411,25 @@ export function AppShell() {
 
   function signOut() {
     setIsUserMenuOpen(false);
+    if (isDemoMode) clearLocalDemo();
     clear();
     navigate("/login");
+  }
+
+  async function resetDemo() {
+    const nextSession = resetLocalDemo();
+    setSession(nextSession);
+    setIsUserMenuOpen(false);
+    await queryClient.invalidateQueries();
+    navigate("/app/dashboard");
+  }
+
+  function leaveDemo(target: "/" | "/register") {
+    setIsUserMenuOpen(false);
+    clearLocalDemo();
+    clear();
+    queryClient.clear();
+    navigate(target);
   }
 
   function chooseWorkingBranch(branchId: string) {
@@ -438,7 +495,10 @@ export function AppShell() {
               </Link>
             ) : null}
             <div className="min-w-0">
-              <p className="truncate text-base font-black leading-tight text-ink">{pageTitle}</p>
+              <div className="flex min-w-0 items-center gap-2">
+                <p className="truncate text-base font-black leading-tight text-ink">{pageTitle}</p>
+                {isDemoMode ? <span className="shrink-0 rounded bg-amber-100 px-2 py-0.5 text-[11px] font-black uppercase text-amber-800">Demo Mode</span> : null}
+              </div>
               <p className="truncate text-xs font-semibold text-stone-500">
                 {storeName} <span className="text-stone-400">UID {storeUid}</span>
               </p>
@@ -681,22 +741,47 @@ export function AppShell() {
                     <p className="truncate text-[11px] text-stone-500" title={storeUid}>UID {storeUid}</p>
                   </div>
                 </div>
+                {isDemoMode ? (
+                  <div className="border-b border-amber-100 bg-amber-50 p-3">
+                    <p className="text-xs font-black text-amber-900">Demo Mode</p>
+                    <p className="mt-1 text-xs leading-5 text-amber-800">ข้อมูลอยู่เฉพาะในเครื่องนี้และรีเซ็ตได้ทุกเมื่อ</p>
+                  </div>
+                ) : null}
                 <Link to="/app/profile" className="flex items-center gap-2 px-3 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50" role="menuitem" onClick={() => setIsUserMenuOpen(false)}>
                   <UserCircle size={17} className="text-stone-500" />
                   โปรไฟล์
                 </Link>
-                <Link to="/app/profile/billing" className="flex items-center gap-2 px-3 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50" role="menuitem" onClick={() => setIsUserMenuOpen(false)}>
-                  <CreditCard size={17} className="text-stone-500" />
-                  แพ็กเกจบัญชี
-                </Link>
+                {!isDemoMode ? (
+                  <Link to="/app/profile/billing" className="flex items-center gap-2 px-3 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50" role="menuitem" onClick={() => setIsUserMenuOpen(false)}>
+                    <CreditCard size={17} className="text-stone-500" />
+                    แพ็กเกจบัญชี
+                  </Link>
+                ) : null}
                 <Link to="/app/support" className="flex items-center gap-2 px-3 py-2.5 text-sm font-semibold text-stone-700 hover:bg-stone-50" role="menuitem" onClick={() => setIsUserMenuOpen(false)}>
                   <HelpCircle size={17} className="text-stone-500" />
                   ช่วยเหลือ
                 </Link>
-                <button type="button" className="flex w-full items-center gap-2 border-t border-stone-100 px-3 py-2.5 text-left text-sm font-semibold text-red-700 hover:bg-red-50" role="menuitem" onClick={signOut}>
+                {isDemoMode ? (
+                  <>
+                    <button type="button" className="flex w-full items-center gap-2 border-t border-stone-100 px-3 py-2.5 text-left text-sm font-semibold text-stone-700 hover:bg-stone-50" role="menuitem" onClick={resetDemo}>
+                      <Repeat size={17} />
+                      รีเซ็ตเดโม
+                    </button>
+                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-leaf hover:bg-teal-50" role="menuitem" onClick={() => leaveDemo("/register")}>
+                      <UserPlus size={17} />
+                      สมัครใช้งานจริง
+                    </button>
+                    <button type="button" className="flex w-full items-center gap-2 px-3 py-2.5 text-left text-sm font-semibold text-red-700 hover:bg-red-50" role="menuitem" onClick={() => leaveDemo("/")}>
+                      <LogOut size={17} />
+                      ออกจากเดโม
+                    </button>
+                  </>
+                ) : (
+                  <button type="button" className="flex w-full items-center gap-2 border-t border-stone-100 px-3 py-2.5 text-left text-sm font-semibold text-red-700 hover:bg-red-50" role="menuitem" onClick={signOut}>
                   <LogOut size={17} />
                   ออกจากระบบ
-                </button>
+                  </button>
+                )}
               </div>
             </div>
           </div>
@@ -724,16 +809,16 @@ export function AppShell() {
   );
 }
 
-function StoreSidebarContent({ onNavigate }: { onNavigate?: () => void }) {
+function StoreSidebarContent({ isDemoMode = false, onNavigate }: { isDemoMode?: boolean; onNavigate?: () => void }) {
   const [searchQuery, setSearchQuery] = useState("");
   const session = useAuth((state) => state.session);
   const showOnboarding = shouldShowOnboardingNav(session);
   const progress = session?.business?.onboardingProgress ?? {};
   const completedSteps = ["setupStore", "firstProduct", "stockIn", "firstSale", "firstReport"].filter((key) => progress[key]).length;
-  const visibleNavGroups = filterSidebarNavGroups(withSessionDashboardPath(navGroups, session), searchQuery, showOnboarding, getSessionPermissions(session), session?.business?.role, session?.user.isSystemAdmin);
+  const visibleNavGroups = filterSidebarNavGroups(withSessionDashboardPath(navGroups, session), searchQuery, showOnboarding, getSessionPermissions(session), session?.business?.role, session?.user.isSystemAdmin, isDemoMode);
   const normalizedSearchQuery = searchQuery.trim().toLocaleLowerCase();
   const hasSearchQuery = normalizedSearchQuery.length > 0;
-  const showAdminLink = Boolean(session?.user.isSystemAdmin) && (!hasSearchQuery || "zentory admin".includes(normalizedSearchQuery));
+  const showAdminLink = !isDemoMode && Boolean(session?.user.isSystemAdmin) && (!hasSearchQuery || "zentory admin".includes(normalizedSearchQuery));
 
   return (
     <>

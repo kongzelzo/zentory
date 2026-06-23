@@ -1,8 +1,8 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException, Optional } from "@nestjs/common";
 import { Prisma, RoleName } from "@prisma/client";
-import { hasPermission, normalizePermissionOverrides, resolveEffectivePermissions, type Role } from "@zentory/shared";
+import { hasPermission, normalizePermissionOverrides, normalizePlanCode, planCatalog, resolveEffectivePermissions, resolvePlanCapabilities, type PlanCapabilities, type Role } from "@zentory/shared";
 import { randomUUID } from "crypto";
-import { AdjustmentDto, BranchDto, BusinessDto, CategoryDto, CheckoutPaymentDto, DashboardGoalsDto, MemberApprovalDto, PaymentWebhookDto, ProductDto, ProductVariantsDto, ReceiptDto, ReceiptNewProductDto, SaleDto, SaleListQueryDto, StockCountCreateDto, StockCountItemsUpdateDto, TransferDto, WarehouseDto } from "./common/dto";
+import { AdjustmentDto, BranchDto, BusinessDto, CategoryDto, CheckoutPaymentDto, ConfirmCheckoutDto, DashboardGoalsDto, MemberApprovalDto, PaymentWebhookDto, ProductBulkCategoryDto, ProductDto, ProductVariantsDto, ReceiptDto, ReceiptNewProductDto, SaleDto, SaleListQueryDto, StockCountCreateDto, StockCountItemsUpdateDto, TransferDto, WarehouseDto } from "./common/dto";
 import { CurrentUser } from "./common/current-user.decorator";
 import { NotificationService } from "./notifications/notification.service";
 import { PrismaService } from "./prisma/prisma.service";
@@ -19,8 +19,21 @@ const BRANCH_STATUSES = ["ACTIVE", "INACTIVE"] as const;
 const WAREHOUSE_STATUSES = ["ACTIVE", "INACTIVE"] as const;
 const BANGKOK_OFFSET_MS = 7 * 60 * 60 * 1000;
 const PROMPTPAY_ACCESS_DAYS = 30;
-const PLAN_CODE_RANK: Record<string, number> = { FREE: 0, PRO: 10, PREMIUM: 20 };
+const PAYMENT_GRACE_DAYS = 7;
+const PLAN_CODE_RANK: Record<string, number> = { STARTER: 10, PROFESSIONAL: 20, MULTI_BRANCH: 30 };
+const PLAN_LOCKED_BRANCH_ERROR = "สาขานี้ถูกจำกัดตามแพ็กเกจ กรุณาเลือกสาขาที่ใช้งานต่อหรืออัปเกรดแพ็กเกจ";
+const PLAN_LOCKED_WAREHOUSE_ERROR = "คลังนี้ถูกจำกัดตามแพ็กเกจ กรุณาเลือกคลังที่ใช้งานต่อหรืออัปเกรดแพ็กเกจ";
+const auditPayloadFields: Record<string, Set<string>> = {
+  Product: new Set(["name", "sku", "barcode", "description", "unit", "costPrice", "salePrice", "minStock", "categoryId", "categoryName", "brandId", "brandName", "status"]),
+  StockAdjustment: new Set(["documentNo", "status", "warehouseId", "warehouseName", "branchId", "branchName", "productId", "productName", "productSku", "quantity", "stockOnHand", "adjustmentMode", "targetQuantity", "reason", "reviewedById", "reviewedByName", "reviewedByEmail", "reviewedAt", "rejectionReason"]),
+  Branch: new Set(["name", "code", "status"]),
+  Warehouse: new Set(["name", "code", "status", "type", "branchId"]),
+  Sale: new Set(["receiptNo", "status", "total", "branchId", "warehouseId"]),
+  default: new Set(["name", "code", "status", "action", "entity", "entityId", "reason"])
+};
+const sensitiveAuditFields = /(password|token|secret|key|signature|authorization|cookie|card|cvv|otp|session|hash|reset|magic|raw|payload|headers|ipAddress|ip)/i;
 type LocationFilters = { branchId?: string; warehouseId?: string };
+type SalesReportFilters = LocationFilters & Pick<SaleListQueryDto, "dateFrom" | "dateTo" | "allTime">;
 type StockPlanningReason = "OUT" | "LOW" | "FAST_MOVING" | "HEALTHY";
 type CheckoutMode = "subscription" | "promptpay";
 const noopNotificationHooks = {
@@ -30,7 +43,9 @@ const noopNotificationHooks = {
   refreshStockAlertsForProducts: async () => undefined,
   resolveStaffRequestNotification: async () => undefined,
   createStockCountReviewNotification: async () => undefined,
-  resolveStockCountReviewNotification: async () => undefined
+  resolveStockCountReviewNotification: async () => undefined,
+  createStockAdjustmentRequestNotification: async () => undefined,
+  resolveStockAdjustmentRequestNotification: async () => undefined
 } as unknown as NotificationService;
 type ScopedLocation = {
   branchIds?: string[];
@@ -43,6 +58,21 @@ type ScopedLocation = {
   productWhere: Prisma.ProductWhereInput;
   saleWhere: Prisma.SaleWhereInput;
   transferWhere: Prisma.StockTransferWhereInput;
+};
+type PlanAccessSnapshot = {
+  status: string;
+  paymentMode: string;
+  graceEndsAt?: Date | null;
+  plan: { code: string; name: string; productLimit: number; userLimit: number; branchLimit: number; warehouseLimit: number };
+  capabilities: PlanCapabilities;
+  isLimited: boolean;
+  allowedBranchIds: string[];
+  allowedWarehouseIds: string[];
+  lockedBranchIds: string[];
+  lockedWarehouseIds: string[];
+  lockedMemberIds: string[];
+  lockedProductCount: number;
+  counts: { branches: number; warehouses: number; members: number; products: number };
 };
 
 @Injectable()
@@ -59,10 +89,34 @@ export class ZentoryService {
     this.requireBusiness(user);
     await this.expirePromptPaySubscriptionIfNeeded(user.businessId!);
     const scope = await this.scopedLocation(user);
-    return this.prisma.business.findUniqueOrThrow({
+    const business = await this.prisma.business.findUniqueOrThrow({
       where: { id: user.businessId },
       include: { subscription: { include: { plan: true } }, branches: { where: scope.branchWhere } }
     });
+    return { ...business, planAccess: await this.planAccess(user.businessId!) };
+  }
+
+  async billingPlanAccess(user: CurrentUser) {
+    this.requireBusiness(user);
+    return this.planAccess(user.businessId!);
+  }
+
+  async updateFreePlanSelection(user: CurrentUser, dto: { branchId: string; warehouseId?: string }) {
+    this.requireBusiness(user);
+    if (!this.hasAllBranchAccess(user)) throw new ForbiddenException("Only the store owner can choose plan-limited access");
+    const branch = await this.assertBranch(user.businessId!, dto.branchId);
+    if (branch.status !== "ACTIVE") throw new BadRequestException("Branch is inactive");
+    const warehouse = dto.warehouseId
+      ? await this.resolveWarehouse(user.businessId!, branch.id, dto.warehouseId)
+      : await this.defaultSaleWarehouse(user.businessId!, branch.id);
+    await this.prisma.businessSubscription.update({
+      where: { businessId: user.businessId },
+      data: {
+        selectedFreeBranchId: branch.id,
+        selectedFreeWarehouseId: warehouse.id
+      } as any
+    });
+    return this.planAccess(user.businessId!);
   }
 
   async listBranches(user: CurrentUser) {
@@ -117,6 +171,7 @@ export class ZentoryService {
   async updateBranch(user: CurrentUser, id: string, dto: Partial<BranchDto>) {
     this.requireBusiness(user);
     const branch = await this.assertBranchAccess(user, id);
+    await this.assertPlanBranchWriteAccess(user.businessId!, branch.id);
     const data = this.branchWriteData(dto);
     if (dto.name !== undefined && !data.name) throw new BadRequestException("Branch name is required");
     if (dto.code !== undefined && !data.code) throw new BadRequestException("Branch code is required");
@@ -181,6 +236,7 @@ export class ZentoryService {
     if (!data.code) throw new BadRequestException("Warehouse code is required");
     await this.enforceWarehouseLimit(user.businessId!);
     const branch = await this.assertBranchAccess(user, dto.branchId);
+    await this.assertPlanBranchWriteAccess(user.businessId!, branch.id);
     try {
       return await this.prisma.warehouse.create({
         data: {
@@ -205,6 +261,7 @@ export class ZentoryService {
     this.requireBusiness(user);
     const warehouse = await this.prisma.warehouse.findFirst({ where: { id, businessId: user.businessId } });
     if (!warehouse) throw new NotFoundException("Warehouse not found");
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     const data = this.warehouseWriteData(dto);
     if (dto.name !== undefined && !data.name) throw new BadRequestException("Warehouse name is required");
     if (dto.code !== undefined && !data.code) throw new BadRequestException("Warehouse code is required");
@@ -237,6 +294,7 @@ export class ZentoryService {
       }
     });
     if (!warehouse) throw new NotFoundException("Warehouse not found");
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     await this.assertCanDeleteWarehouse(user.businessId!, warehouse);
     return this.prisma.warehouse.delete({ where: { id } });
   }
@@ -499,23 +557,29 @@ export class ZentoryService {
     this.assertProductMasterOwner(user);
     this.requireBusiness(user);
     if (!this.canReceiveInventory(user)) throw new ForbiddenException("Requires inventory.receive permission");
-    const colors = this.uniqueTrimmedValues(dto.colors, "กรุณาระบุสีอย่างน้อย 1 ค่า");
-    const sizes = this.uniqueTrimmedValues(dto.sizes, "กรุณาระบุไซส์อย่างน้อย 1 ค่า");
-    const expectedVariantCount = colors.length * sizes.length;
+    const colors = this.optionalVariantValues(dto.colors);
+    const sizes = this.optionalVariantValues(dto.sizes);
+    if (colors.length === 0 && sizes.length === 0) throw new BadRequestException("กรุณาระบุสีหรือไซส์อย่างน้อย 1 ค่า");
+    const colorOptions = colors.length > 0 ? colors : [""];
+    const sizeOptions = sizes.length > 0 ? sizes : [""];
+    const hasColorVariants = colors.length > 0;
+    const hasSizeVariants = sizes.length > 0;
+    const expectedVariantCount = colorOptions.length * sizeOptions.length;
     if (dto.variants.length !== expectedVariantCount) throw new BadRequestException("จำนวน variant ต้องตรงกับสีและไซส์ที่ระบุ");
     await this.enforceProductLimitForNewProducts(user.businessId!, expectedVariantCount);
     const rowKeySet = new Set<string>();
     for (const row of dto.variants) {
-      const color = row.color.trim();
-      const size = row.size.trim();
-      if (!colors.includes(color) || !sizes.includes(size)) throw new BadRequestException("variant ต้องใช้สีและไซส์จากรายการที่ระบุ");
+      const color = row.color?.trim() ?? "";
+      const size = row.size?.trim() ?? "";
+      if (hasColorVariants !== Boolean(color) || hasSizeVariants !== Boolean(size)) throw new BadRequestException("variant ต้องใช้สีและไซส์ตามมิติที่ระบุ");
+      if (!colorOptions.includes(color) || !sizeOptions.includes(size)) throw new BadRequestException("variant ต้องใช้สีและไซส์จากรายการที่ระบุ");
       const key = this.variantKey(color, size);
       if (rowKeySet.has(key)) throw new BadRequestException("มี variant สี/ไซส์ซ้ำในรายการ");
       rowKeySet.add(key);
     }
-    for (const color of colors) {
-      for (const size of sizes) {
-        if (!rowKeySet.has(this.variantKey(color, size))) throw new BadRequestException(`ขาด variant ${color} / ${size}`);
+    for (const color of colorOptions) {
+      for (const size of sizeOptions) {
+        if (!rowKeySet.has(this.variantKey(color, size))) throw new BadRequestException(`ขาด variant ${[color, size].filter(Boolean).join(" / ")}`);
       }
     }
     const skus = dto.variants.map((row) => row.sku.trim()).filter(Boolean);
@@ -526,6 +590,7 @@ export class ZentoryService {
     await this.assertVariantCodesAvailable(user.businessId!, skus, barcodes);
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const warehouse = await this.resolveWarehouse(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
 
     try {
       const result = await this.prisma.$transaction(async (tx) => {
@@ -570,8 +635,8 @@ export class ZentoryService {
               barcode: row.barcode?.trim() || undefined,
               name: dto.name,
               description: dto.description,
-              variantColor: row.color.trim(),
-              variantSize: row.size.trim(),
+              variantColor: row.color?.trim() || null,
+              variantSize: row.size?.trim() || null,
               unit: dto.unit ?? "ชิ้น",
               costPrice,
               salePrice: row.salePrice ?? dto.salePrice,
@@ -623,6 +688,7 @@ export class ZentoryService {
     this.requireBusiness(user);
     await this.enforceProductLimit(user.businessId!);
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, dto.warehouseId!);
     try {
       return await this.prisma.$transaction(async (tx) => {
         const warehouse = await this.resolveWarehouseWithClient(tx, user.businessId!, dto.warehouseId!, dto.branchId);
@@ -648,6 +714,7 @@ export class ZentoryService {
     const receiveNow = dto.receiveNow!;
     await this.enforceProductLimit(user.businessId!);
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: receiveNow.warehouseId });
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, receiveNow.warehouseId);
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         const warehouse = await this.resolveWarehouseWithClient(tx, user.businessId!, receiveNow.warehouseId, dto.branchId);
@@ -720,6 +787,7 @@ export class ZentoryService {
     const brandId = dto.brandName ? (await this.upsertBrand(user.businessId!, dto.brandName)).id : undefined;
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const warehouse = await this.resolveWarehouse(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     try {
       const result = await this.prisma.$transaction(async (tx) => {
         const product = await tx.product.create({
@@ -779,6 +847,8 @@ export class ZentoryService {
     const categoryId = dto.categoryName ? (await this.upsertCategory(user.businessId!, dto.categoryName)).id : undefined;
     const brandId = dto.brandName ? (await this.upsertBrand(user.businessId!, dto.brandName)).id : undefined;
     const { categoryName: _categoryName, brandName: _brandName, initialStock: _initialStock, receiveNow: _receiveNow, ...productData } = dto;
+    if ("variantColor" in productData) productData.variantColor = productData.variantColor?.trim() || null;
+    if ("variantSize" in productData) productData.variantSize = productData.variantSize?.trim() || null;
     try {
       const updated = await this.prisma.product.update({
         where: { id },
@@ -789,6 +859,46 @@ export class ZentoryService {
     } catch (error) {
       this.handleProductWriteError(error);
     }
+  }
+
+  async updateProductsCategory(user: CurrentUser, dto: ProductBulkCategoryDto) {
+    this.assertProductMasterOwner(user);
+    this.requireBusiness(user);
+    const productIds = Array.from(new Set(dto.productIds.map((id) => id.trim()).filter(Boolean)));
+    if (productIds.length === 0) throw new BadRequestException("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ");
+    const categoryName = dto.categoryName?.trim() || "";
+
+    return this.prisma.$transaction(async (tx) => {
+      const categoryId = categoryName ? (await this.upsertCategoryWithClient(tx, user.businessId!, categoryName)).id : null;
+      const products = await tx.product.findMany({
+        where: { id: { in: productIds }, businessId: user.businessId!, status: { not: "ARCHIVED" as any } },
+        select: { id: true, name: true, sku: true, barcode: true, description: true, categoryId: true, category: { select: { name: true } }, brandId: true, brand: { select: { name: true } }, unit: true, costPrice: true, salePrice: true, minStock: true }
+      });
+      if (products.length === 0) throw new NotFoundException("ไม่พบสินค้าที่แก้ไขได้");
+
+      await tx.product.updateMany({
+        where: { id: { in: products.map((product) => product.id) }, businessId: user.businessId!, status: { not: "ARCHIVED" as any } },
+        data: { categoryId }
+      });
+
+      const auditRows = products
+        .filter((product) => product.categoryId !== categoryId)
+        .map((product) => ({
+          businessId: user.businessId!,
+          userId: user.userId,
+          action: "product.bulk_category_update",
+          entity: "Product",
+          entityId: product.id,
+          before: this.productAuditSnapshot(product),
+          after: this.productAuditSnapshot({ ...product, categoryId, categoryName: categoryName || null })
+        }));
+      if (auditRows.length > 0) await tx.auditLog.createMany({ data: auditRows });
+
+      return {
+        updatedCount: products.length,
+        categoryName: categoryName || null
+      };
+    });
   }
 
   async updateProductImage(user: CurrentUser, id: string, file: ProductImageFile) {
@@ -917,6 +1027,7 @@ export class ZentoryService {
     }
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const warehouse = await this.resolveWarehouse(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     try {
       const receipt = await this.prisma.$transaction(async (tx) => {
         const receipt = await tx.stockReceipt.create({
@@ -962,19 +1073,31 @@ export class ZentoryService {
     if (dto.quantity === 0) throw new BadRequestException("Adjustment quantity cannot be zero");
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const warehouse = await this.resolveWarehouse(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     const adjustmentMode = dto.adjustmentMode ?? (dto.quantity > 0 ? "INCREASE" : "DECREASE");
-    const adjustment = await this.prisma.$transaction(async (tx) => {
+    const shouldApplyImmediately = this.canApproveStockAdjustment(user);
+    const result = await this.prisma.$transaction(async (tx) => {
       const adjustment = await tx.stockAdjustment.create({
         data: {
           businessId: user.businessId!,
           warehouseId: warehouse.id,
           userId: user.userId,
+          productId: dto.productId,
           documentNo: await this.nextDocumentNo(tx, user.businessId!, "ADJ"),
+          status: (shouldApplyImmediately ? "APPROVED" : "PENDING") as any,
+          quantity: dto.quantity,
           reason: dto.reason,
           adjustmentMode,
-          targetQuantity: dto.targetQuantity
-        }
+          targetQuantity: dto.targetQuantity,
+          reviewedById: shouldApplyImmediately ? user.userId : undefined,
+          reviewedAt: shouldApplyImmediately ? new Date() : undefined
+        },
+        include: this.adjustmentInclude()
       });
+      if (!shouldApplyImmediately) {
+        const balanceBefore = await this.currentStockOnHand(tx, user.businessId!, warehouse.id, dto.productId);
+        return { adjustment, balanceBefore, balanceAfter: balanceBefore + dto.quantity };
+      }
       const stockChange = dto.quantity > 0
         ? await this.addStock(tx, user.businessId!, warehouse.id, dto.productId, dto.quantity)
         : await this.removeStock(tx, user.businessId!, warehouse.id, dto.productId, Math.abs(dto.quantity));
@@ -994,10 +1117,143 @@ export class ZentoryService {
           reference: adjustment.documentNo
         }
       });
-      return adjustment;
+      return { adjustment, balanceBefore: stockChange.balanceBefore, balanceAfter: stockChange.quantity };
     });
-    await this.notifications.refreshStockAlertsForProducts(user.businessId!, [dto.productId], [warehouse.branchId]);
-    return adjustment;
+    const { adjustment, balanceBefore, balanceAfter } = result;
+    if (shouldApplyImmediately) {
+      await this.notifications.refreshStockAlertsForProducts(user.businessId!, [dto.productId], [warehouse.branchId]);
+      await this.writeAuditLog(
+        user,
+        "stock_adjustment.apply",
+        "StockAdjustment",
+        adjustment.id,
+        this.adjustmentAuditSnapshot(adjustment, { stockOnHand: balanceBefore }),
+        this.adjustmentAuditSnapshot(adjustment, { stockOnHand: balanceAfter })
+      );
+    } else {
+      await this.writeAuditLog(
+        user,
+        "stock_adjustment.request",
+        "StockAdjustment",
+        adjustment.id,
+        this.adjustmentAuditSnapshot(adjustment, { stockOnHand: balanceBefore }),
+        this.adjustmentAuditSnapshot(adjustment, { stockOnHand: balanceAfter })
+      );
+      await this.notifications.createStockAdjustmentRequestNotification(user.businessId!, adjustment.id);
+    }
+    return this.serializeAdjustment(adjustment);
+  }
+
+  async listAdjustments(user: CurrentUser, filters: { status?: string; branchId?: string; warehouseId?: string } = {}) {
+    this.requireBusiness(user);
+    const scope = await this.scopedLocation(user, { branchId: filters.branchId, warehouseId: filters.warehouseId });
+    const status = this.stockAdjustmentStatus(filters.status);
+    const rows = await this.prisma.stockAdjustment.findMany({
+      where: {
+        businessId: user.businessId,
+        ...(status ? { status: status as any } : {}),
+        ...(scope.warehouseId ? { warehouseId: scope.warehouseId } : scope.branchIds ? { warehouse: { branchId: { in: scope.branchIds } } } : {})
+      },
+      include: this.adjustmentInclude(),
+      orderBy: { createdAt: "desc" },
+      take: 100
+    });
+    return rows.map((row) => this.serializeAdjustment(row));
+  }
+
+  async getAdjustment(user: CurrentUser, id: string) {
+    this.requireBusiness(user);
+    const adjustment = await this.prisma.stockAdjustment.findFirst({
+      where: { id, businessId: user.businessId },
+      include: this.adjustmentInclude()
+    });
+    if (!adjustment) throw new NotFoundException("Adjustment request not found");
+    await this.assertBranchAccess(user, adjustment.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, adjustment.warehouseId);
+    return this.serializeAdjustment(adjustment);
+  }
+
+  async approveAdjustment(user: CurrentUser, id: string) {
+    this.requireBusiness(user);
+    const adjustment = await this.prisma.stockAdjustment.findFirst({
+      where: { id, businessId: user.businessId },
+      include: this.adjustmentInclude()
+    });
+    if (!adjustment) throw new NotFoundException("Adjustment request not found");
+    await this.assertBranchAccess(user, adjustment.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, adjustment.warehouseId);
+    if (adjustment.status !== "PENDING") throw new BadRequestException("อนุมัติได้เฉพาะคำขอที่รออนุมัติ");
+    if (!adjustment.productId || typeof adjustment.quantity !== "number") throw new BadRequestException("คำขอปรับสต็อกนี้ไม่มีข้อมูลสินค้า/จำนวนที่ครบถ้วน");
+    const productId = adjustment.productId;
+    const quantity = adjustment.quantity;
+    const result = await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.stockAdjustment.update({
+        where: { id },
+        data: {
+          status: "APPROVED" as any,
+          reviewedById: user.userId,
+          reviewedAt: new Date()
+        },
+        include: this.adjustmentInclude()
+      });
+      const stockChange = quantity > 0
+        ? await this.addStock(tx, user.businessId!, adjustment.warehouseId, productId, quantity)
+        : await this.removeStock(tx, user.businessId!, adjustment.warehouseId, productId, Math.abs(quantity));
+      await tx.stockMovement.create({
+        data: {
+          businessId: user.businessId!,
+          warehouseId: adjustment.warehouseId,
+          productId,
+          userId: user.userId,
+          type: quantity > 0 ? "ADJUSTMENT_IN" : "ADJUSTMENT_OUT",
+          quantity: Math.abs(quantity),
+          balanceBefore: stockChange.balanceBefore,
+          balanceAfter: stockChange.quantity,
+          reason: adjustment.reason,
+          adjustmentMode: adjustment.adjustmentMode,
+          targetQuantity: adjustment.targetQuantity,
+          reference: adjustment.documentNo
+        }
+      });
+      return { updated, balanceBefore: stockChange.balanceBefore, balanceAfter: stockChange.quantity };
+    });
+    const { updated, balanceBefore, balanceAfter } = result;
+    await this.notifications.refreshStockAlertsForProducts(user.businessId!, [productId], [adjustment.warehouse.branchId]);
+    await this.notifications.resolveStockAdjustmentRequestNotification(user.businessId!, adjustment.id);
+    await this.writeAuditLog(
+      user,
+      "stock_adjustment.approve",
+      "StockAdjustment",
+      adjustment.id,
+      this.adjustmentAuditSnapshot(adjustment, { stockOnHand: balanceBefore }),
+      this.adjustmentAuditSnapshot(updated, { stockOnHand: balanceAfter })
+    );
+    return this.serializeAdjustment(updated);
+  }
+
+  async rejectAdjustment(user: CurrentUser, id: string, reason?: string) {
+    this.requireBusiness(user);
+    const adjustment = await this.prisma.stockAdjustment.findFirst({
+      where: { id, businessId: user.businessId },
+      include: this.adjustmentInclude()
+    });
+    if (!adjustment) throw new NotFoundException("Adjustment request not found");
+    await this.assertBranchAccess(user, adjustment.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, adjustment.warehouseId);
+    if (adjustment.status !== "PENDING") throw new BadRequestException("ปฏิเสธได้เฉพาะคำขอที่รออนุมัติ");
+    const updated = await this.prisma.stockAdjustment.update({
+      where: { id },
+      data: {
+        status: "REJECTED" as any,
+        reviewedById: user.userId,
+        reviewedAt: new Date(),
+        rejectionReason: reason?.trim() || null
+      },
+      include: this.adjustmentInclude()
+    });
+    await this.notifications.resolveStockAdjustmentRequestNotification(user.businessId!, adjustment.id);
+    await this.writeAuditLog(user, "stock_adjustment.reject", "StockAdjustment", adjustment.id, this.adjustmentAuditSnapshot(adjustment), this.adjustmentAuditSnapshot(updated));
+    return this.serializeAdjustment(updated);
   }
 
   async listStockCounts(user: CurrentUser, filters: { warehouseId?: string } = {}) {
@@ -1020,6 +1276,7 @@ export class ZentoryService {
     this.requireBusiness(user);
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const warehouse = await this.resolveWarehouse(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     const balances = await this.prisma.inventoryBalance.findMany({
       where: { businessId: user.businessId, warehouseId: warehouse.id, product: { status: { in: PRODUCT_MANAGEMENT_STATUSES as any } } },
       include: { product: { include: { category: true, brand: true } } }
@@ -1068,6 +1325,7 @@ export class ZentoryService {
     const stockCount = await this.prisma.stockCount.findFirst({ where: { id, businessId: user.businessId }, include: { items: true, warehouse: true } });
     if (!stockCount) throw new NotFoundException("Stock count not found");
     if (!this.hasAllBranchAccess(user)) await this.assertBranchAccess(user, stockCount.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, stockCount.warehouseId);
     if (stockCount.status !== "COUNTING") throw new BadRequestException("รอบนับนี้แก้ไขไม่ได้แล้ว");
     const itemsByProductId = new Map(stockCount.items.map((item) => [item.productId, item]));
     await this.prisma.$transaction(async (tx) => {
@@ -1093,6 +1351,7 @@ export class ZentoryService {
     const stockCount = await this.prisma.stockCount.findFirst({ where: { id, businessId: user.businessId }, include: { items: true, warehouse: true } });
     if (!stockCount) throw new NotFoundException("Stock count not found");
     if (!this.hasAllBranchAccess(user)) await this.assertBranchAccess(user, stockCount.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, stockCount.warehouseId);
     if (stockCount.status === "APPLIED" || stockCount.status === "CANCELED") throw new BadRequestException("รอบนับนี้ปิดแล้ว");
     if (stockCount.items.some((item) => item.countedQuantity === null)) throw new BadRequestException("กรุณากรอกยอดนับจริงให้ครบก่อนตรวจทาน");
     if (stockCount.status !== "REVIEW") {
@@ -1116,6 +1375,7 @@ export class ZentoryService {
         include: { items: { include: { product: true } } }
       });
       if (!stockCount) throw new NotFoundException("Stock count not found");
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, stockCount.warehouseId);
       if (stockCount.status === "APPLIED") throw new BadRequestException("รอบนับนี้ปรับสต็อกไปแล้ว");
       if (stockCount.status === "CANCELED") throw new BadRequestException("รอบนับนี้ถูกยกเลิกแล้ว");
       if (stockCount.status !== "REVIEW") throw new BadRequestException("กรุณาตรวจทานส่วนต่างก่อนยืนยันปรับสต็อก");
@@ -1173,6 +1433,7 @@ export class ZentoryService {
     const stockCount = await this.prisma.stockCount.findFirst({ where: { id, businessId: user.businessId }, include: { warehouse: true } });
     if (!stockCount) throw new NotFoundException("Stock count not found");
     if (!this.hasAllBranchAccess(user)) await this.assertBranchAccess(user, stockCount.warehouse.branchId);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, stockCount.warehouseId);
     if (stockCount.status === "APPLIED") throw new BadRequestException("ยกเลิกรอบนับที่ปรับสต็อกแล้วไม่ได้");
     if (stockCount.status !== "CANCELED") {
       await this.prisma.stockCount.update({ where: { id }, data: { status: "CANCELED" } });
@@ -1247,6 +1508,8 @@ export class ZentoryService {
       const sourceWarehouse = await this.resolveWarehouseWithClient(tx, user.businessId!, dto.sourceWarehouseId);
       const destinationWarehouse = await this.resolveWarehouseWithClient(tx, user.businessId!, dto.destinationWarehouseId);
       if (!this.hasAllBranchAccess(user)) await this.assertBranchAccess(user, destinationWarehouse.branchId);
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, sourceWarehouse.id);
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, destinationWarehouse.id);
       if (sourceWarehouse.id === destinationWarehouse.id) throw new BadRequestException("ต้นทางและปลายทางต้องเป็นคนละคลัง");
       const products = await tx.product.findMany({
         where: { businessId: user.businessId, id: { in: dto.items.map((item) => item.productId) }, status: { in: PRODUCT_STOCK_ADJUSTMENT_STATUSES as any } }
@@ -1321,6 +1584,7 @@ export class ZentoryService {
       if (transfer.status !== "REQUESTED") throw new BadRequestException("อนุมัติได้เฉพาะคำขอโอนที่รออนุมัติ");
       const sourceWarehouse = await tx.warehouse.findFirstOrThrow({ where: { id: transfer.sourceWarehouseId } });
       await this.assertBranchAccess(user, sourceWarehouse.branchId);
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, transfer.sourceWarehouseId);
       for (const item of transfer.items) {
         const stockChange = await this.removeStock(tx, user.businessId!, transfer.sourceWarehouseId, item.productId, item.quantity);
         await tx.stockMovement.create({
@@ -1376,6 +1640,7 @@ export class ZentoryService {
       if (transfer.status !== "IN_TRANSIT") throw new BadRequestException("รับได้เฉพาะเอกสารที่อยู่ระหว่างทาง");
       const destinationWarehouse = await tx.warehouse.findFirstOrThrow({ where: { id: transfer.destinationWarehouseId } });
       await this.assertBranchAccess(user, destinationWarehouse.branchId);
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, transfer.destinationWarehouseId);
       for (const item of transfer.items) {
         const stockChange = await this.addStock(tx, user.businessId!, transfer.destinationWarehouseId, item.productId, item.quantity);
         await tx.stockMovement.create({
@@ -1426,6 +1691,7 @@ export class ZentoryService {
         this.assertTransferManagerRole(user);
         await this.assertBranchAccess(user, sourceWarehouse.branchId);
       }
+      await this.assertPlanWarehouseWriteAccess(user.businessId!, transfer.sourceWarehouseId);
       for (const item of transfer.items) {
         const stockChange = await this.addStock(tx, user.businessId!, transfer.sourceWarehouseId, item.productId, item.quantity);
         await tx.stockMovement.create({
@@ -1459,6 +1725,8 @@ export class ZentoryService {
     if (!dto.items.length) throw new BadRequestException("Sale must include at least one item");
     await this.scopedLocation(user, { branchId: dto.branchId, warehouseId: dto.warehouseId });
     const { branch, warehouse } = await this.resolveSaleLocation(user.businessId!, dto.branchId, dto.warehouseId);
+    await this.assertPlanBranchWriteAccess(user.businessId!, branch.id);
+    await this.assertPlanWarehouseWriteAccess(user.businessId!, warehouse.id);
     const sale = await this.prisma.$transaction(async (tx) => {
       const products = this.applyProductBranchStatuses(await (tx.product as any).findMany({
         where: { businessId: user.businessId, id: { in: dto.items.map((item) => item.productId) }, status: { in: PRODUCT_MANAGEMENT_STATUSES as any } },
@@ -1588,6 +1856,122 @@ export class ZentoryService {
       ];
     });
     return this.toCsv([headers, ...rows]);
+  }
+
+  async exportExcel(user: CurrentUser, type: "products" | "stock" | "sales" | "movements" = "sales") {
+    this.requireBusiness(user);
+    const titleMap = {
+      products: "Products",
+      stock: "Stock",
+      sales: "Sales",
+      movements: "Stock Movements"
+    };
+    const rows = type === "products"
+      ? await this.productExportRows(user)
+      : type === "stock"
+        ? await this.stockExportRows(user)
+        : type === "movements"
+          ? await this.movementExportRows(user)
+          : await this.salesExportRows(user);
+    return this.toExcelHtml(titleMap[type], rows);
+  }
+
+  async profitLossReport(user: CurrentUser, filters: LocationFilters = {}) {
+    this.requireBusiness(user);
+    const scope = await this.scopedLocation(user, filters);
+    const now = new Date();
+    const today = this.startOfBangkokDay(now);
+    const start = new Date(today.getTime() - 29 * 24 * 60 * 60 * 1000);
+    const where = { businessId: user.businessId!, createdAt: { gte: start }, status: "PAID" as const, ...scope.saleWhere };
+    const sales = await this.prisma.sale.findMany({
+      where,
+      include: {
+        branch: { select: { id: true, name: true } },
+        warehouse: { select: { id: true, name: true } },
+        items: { include: { product: { select: { id: true, name: true, sku: true } } } }
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+    const subtotal = sales.reduce((sum, sale) => sum + Number(sale.subtotal), 0);
+    const discount = sales.reduce((sum, sale) => sum + Number(sale.discount), 0);
+    const netSales = sales.reduce((sum, sale) => sum + Number(sale.total), 0);
+    const cogs = sales.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + Number(item.unitCost) * item.quantity, 0), 0);
+    const grossProfit = netSales - cogs;
+    const expenses = 0;
+    const netProfit = grossProfit - expenses;
+    const byProduct = new Map<string, { productId: string; name: string; sku: string; quantity: number; revenue: number; cogs: number; grossProfit: number }>();
+    for (const sale of sales) {
+      const discountRatio = Number(sale.subtotal) > 0 ? Number(sale.discount) / Number(sale.subtotal) : 0;
+      for (const item of sale.items) {
+        const revenue = Number(item.total) * (1 - discountRatio);
+        const itemCogs = Number(item.unitCost) * item.quantity;
+        const current = byProduct.get(item.productId) ?? { productId: item.productId, name: item.product.name, sku: item.product.sku, quantity: 0, revenue: 0, cogs: 0, grossProfit: 0 };
+        current.quantity += item.quantity;
+        current.revenue += revenue;
+        current.cogs += itemCogs;
+        current.grossProfit += revenue - itemCogs;
+        byProduct.set(item.productId, current);
+      }
+    }
+    return {
+      range: { start: this.bangkokDateKey(start), end: this.bangkokDateKey(now), days: 30 },
+      summary: {
+        subtotal,
+        discount,
+        netSales,
+        cogs,
+        grossProfit,
+        grossMarginPercent: netSales > 0 ? Math.round((grossProfit / netSales) * 10000) / 100 : 0,
+        expenses,
+        netProfit,
+        receiptCount: sales.length
+      },
+      topProducts: [...byProduct.values()].sort((left, right) => right.grossProfit - left.grossProfit).slice(0, 10),
+      recentSales: sales.slice(0, 10).map((sale) => ({
+        id: sale.id,
+        receiptNo: sale.receiptNo,
+        createdAt: sale.createdAt,
+        total: sale.total,
+        cogs: sale.items.reduce((sum, item) => sum + Number(item.unitCost) * item.quantity, 0),
+        branch: sale.branch,
+        warehouse: sale.warehouse
+      }))
+    };
+  }
+
+  async listAuditLogs(user: CurrentUser, query: { entity?: string; entityId?: string; action?: string; userId?: string; limit?: number; cursor?: string } = {}) {
+    if (!user.isSystemAdmin) {
+      this.requireBusiness(user);
+      if (user.role !== "OWNER") throw new ForbiddenException("Audit log is restricted to owners");
+    }
+    const limit = Math.min(Math.max(query.limit ?? 50, 1), 100);
+    const rows = await this.prisma.auditLog.findMany({
+      where: {
+        ...(user.businessId ? { businessId: user.businessId } : {}),
+        ...(query.entity ? { entity: query.entity } : {}),
+        ...(query.entityId ? { entityId: query.entityId } : {}),
+        ...(query.action ? { action: query.action } : {}),
+        ...(query.userId ? { userId: query.userId } : {}),
+        ...(query.cursor ? { createdAt: { lt: new Date(query.cursor) } } : {})
+      },
+      include: { user: { select: { id: true, name: true, email: true } } },
+      orderBy: { createdAt: "desc" },
+      take: limit + 1
+    });
+    const stockMovements = await this.auditStockMovements(user, rows);
+    const items = rows.slice(0, limit).map((row) => {
+      const enriched = this.enrichAuditStockSnapshot(row, stockMovements);
+      return {
+        ...row,
+        before: this.sanitizeAuditPayload(row.entity, enriched.before),
+        after: this.sanitizeAuditPayload(row.entity, enriched.after)
+      };
+    });
+    return {
+      items,
+      nextCursor: rows.length > limit ? items.at(-1)?.createdAt?.toISOString() ?? null : null
+    };
   }
 
   async getSale(user: CurrentUser, id: string) {
@@ -1851,20 +2235,23 @@ export class ZentoryService {
     }));
   }
 
-  async salesReport(user: CurrentUser, filters: LocationFilters = {}) {
+  async salesReport(user: CurrentUser, filters: SalesReportFilters = {}) {
     this.requireBusiness(user);
     const scope = await this.scopedLocation(user, filters);
     const now = new Date();
     const today = this.startOfBangkokDay(now);
-    const start = new Date(today.getTime() - 29 * 24 * 60 * 60 * 1000);
+    const defaultStart = new Date(today.getTime() - 29 * 24 * 60 * 60 * 1000);
+    const isAllTime = filters.allTime === "1";
+    const start = filters.dateFrom ? new Date(filters.dateFrom) : defaultStart;
+    const end = filters.dateTo ? new Date(filters.dateTo) : now;
     const businessId = user.businessId!;
     const saleWhere = {
       businessId,
-      createdAt: { gte: start },
+      ...(isAllTime ? {} : { createdAt: { gte: start, ...(filters.dateTo ? { lte: end } : {}) } }),
       status: "PAID" as const,
       ...scope.saleWhere
     };
-    const [sales, topProductItems] = await Promise.all([
+    const [recentSales, receiptCount, totals, units, topProductItems, allSalesForSeries] = await Promise.all([
       this.prisma.sale.findMany({
         where: saleWhere,
         include: {
@@ -1874,33 +2261,51 @@ export class ZentoryService {
           items: true
         },
         orderBy: { createdAt: "desc" },
-        take: 300
+        take: 8
       }),
+      this.prisma.sale.count({ where: saleWhere }),
+      this.prisma.sale.aggregate({ where: saleWhere, _sum: { total: true, discount: true } }),
+      this.prisma.saleItem.aggregate({ where: { sale: saleWhere }, _sum: { quantity: true } }),
       this.prisma.saleItem.findMany({
         where: { sale: saleWhere },
         include: { product: { select: { id: true, name: true, sku: true } } }
+      }),
+      this.prisma.sale.findMany({
+        where: saleWhere,
+        select: {
+          createdAt: true,
+          total: true,
+          paymentMethod: true,
+          branch: { select: { name: true } }
+        }
       })
     ]);
-    const totalRevenue = sales.reduce((sum, sale) => sum + Number(sale.total), 0);
-    const totalDiscount = sales.reduce((sum, sale) => sum + Number(sale.discount), 0);
-    const totalUnits = sales.reduce((sum, sale) => sum + sale.items.reduce((itemSum, item) => itemSum + item.quantity, 0), 0);
-    const paymentMethods = this.summarizeSalesBreakdown(sales, (sale) => sale.paymentMethod);
-    const branches = this.summarizeSalesBreakdown(sales, (sale) => sale.branch?.name ?? "ไม่ระบุสาขา");
+    const totalRevenue = Number(totals._sum.total ?? 0);
+    const totalDiscount = Number(totals._sum.discount ?? 0);
+    const totalUnits = units._sum.quantity ?? 0;
+    const paymentMethods = this.summarizeSalesBreakdown(allSalesForSeries, (sale) => sale.paymentMethod);
+    const branches = this.summarizeSalesBreakdown(allSalesForSeries, (sale) => sale.branch?.name ?? "ไม่ระบุสาขา");
+    const reportStart = isAllTime && allSalesForSeries.length > 0
+      ? allSalesForSeries.reduce((earliest, sale) => sale.createdAt < earliest ? sale.createdAt : earliest, allSalesForSeries[0].createdAt)
+      : start;
+    const reportStartDay = this.startOfBangkokDay(reportStart);
+    const reportEndDay = this.startOfBangkokDay(end);
+    const days = Math.max(1, Math.ceil((reportEndDay.getTime() - reportStartDay.getTime()) / (24 * 60 * 60 * 1000)) + 1);
 
     return {
-      range: { start: this.bangkokDateKey(start), end: this.bangkokDateKey(now), days: 30 },
+      range: { start: this.bangkokDateKey(reportStartDay), end: this.bangkokDateKey(end), days },
       summary: {
         totalRevenue,
-        receiptCount: sales.length,
-        averageReceipt: sales.length ? totalRevenue / sales.length : 0,
+        receiptCount,
+        averageReceipt: receiptCount ? totalRevenue / receiptCount : 0,
         totalDiscount,
         totalUnits
       },
-      dailySales: this.buildSalesSeries(start, sales, 30),
+      dailySales: this.buildSalesSeries(reportStartDay, allSalesForSeries, days),
       paymentMethods,
       branches,
       topProducts: this.summarizeTopProducts(topProductItems),
-      recentSales: sales.slice(0, 8).map((sale) => ({
+      recentSales: recentSales.map((sale) => ({
         id: sale.id,
         receiptNo: sale.receiptNo,
         createdAt: sale.createdAt,
@@ -1949,7 +2354,10 @@ export class ZentoryService {
       }
     });
     if (!member || member.role === "OWNER") return undefined;
-    return member.branchAssignments.map((assignment) => assignment.branchId);
+    const assignedIds = member.branchAssignments.map((assignment) => assignment.branchId);
+    const access = await this.planAccess(user.businessId);
+    if (!access.isLimited) return assignedIds;
+    return assignedIds.filter((branchId) => access.allowedBranchIds.includes(branchId));
   }
 
   private async assertBranchAccess(user: CurrentUser, branchId: string) {
@@ -1962,6 +2370,16 @@ export class ZentoryService {
     const branchIds = await this.getAccessibleBranchIds(user);
     if (branchIds && !branchIds.includes(branch.id)) throw new ForbiddenException("Branch is not assigned to this user");
     return branch;
+  }
+
+  private async assertPlanBranchWriteAccess(businessId: string, branchId: string) {
+    const access = await this.planAccess(businessId);
+    if (access.isLimited && !access.allowedBranchIds.includes(branchId)) throw new ForbiddenException(PLAN_LOCKED_BRANCH_ERROR);
+  }
+
+  private async assertPlanWarehouseWriteAccess(businessId: string, warehouseId: string) {
+    const access = await this.planAccess(businessId);
+    if (access.isLimited && !access.allowedWarehouseIds.includes(warehouseId)) throw new ForbiddenException(PLAN_LOCKED_WAREHOUSE_ERROR);
   }
 
   private async scopedLocation(user: CurrentUser, filters: LocationFilters = {}): Promise<ScopedLocation> {
@@ -2195,6 +2613,7 @@ export class ZentoryService {
     this.requireBusiness(user);
     const member = await this.assertEditableMember(user, id, "Owner status cannot be changed");
     if (status === "ACTIVE") {
+      await this.enforceUserLimit(user.businessId!);
       const assignmentCount = await this.prisma.businessMemberBranch.count({ where: { businessMemberId: member.id, branch: { status: "ACTIVE" as any } } });
       if (assignmentCount === 0) throw new BadRequestException("กรุณาเลือกสาขาให้พนักงานก่อนเปิดใช้งาน");
     }
@@ -2468,12 +2887,41 @@ export class ZentoryService {
 
   async updateSubscription(user: CurrentUser, businessId: string, planCode: string) {
     this.requireSystemAdmin(user);
-    const plan = await this.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: planCode } });
+    const normalizedPlanCode = normalizePlanCode(planCode);
+    if (!normalizedPlanCode) throw new BadRequestException("แพ็กเกจนี้ไม่พร้อมใช้งาน");
+    const plan = await this.prisma.subscriptionPlan.findUnique({ where: { code: normalizedPlanCode } });
+    if (!plan?.isActive) throw new BadRequestException("แพ็กเกจนี้ไม่พร้อมใช้งาน");
+    const nextStatus = "ACTIVE";
     return this.prisma.businessSubscription.upsert({
       where: { businessId },
-      create: { businessId, planId: plan.id },
-      update: { planId: plan.id, status: "ACTIVE", paymentMode: plan.code === "FREE" ? "FREE" : "PROMPTPAY_ONE_TIME" }
+      create: { businessId, planId: plan.id, status: nextStatus as any, paymentMode: "PROMPTPAY_ONE_TIME" },
+      update: {
+        planId: plan.id,
+        status: nextStatus as any,
+        paymentMode: "PROMPTPAY_ONE_TIME",
+        graceEndsAt: null,
+        cancelAtPeriodEnd: false
+      } as any
     });
+  }
+
+  async confirmStripeCheckoutSession(user: CurrentUser, dto: ConfirmCheckoutDto) {
+    this.requireBusiness(user);
+    const sessionId = dto.sessionId.trim();
+    if (!sessionId) throw new BadRequestException("Missing Stripe checkout session");
+
+    const session = await this.stripeRequest<any>(`/v1/checkout/sessions/${encodeURIComponent(sessionId)}`, undefined, "GET");
+    const reference = session?.client_reference_id ?? session?.metadata?.reference;
+    if (!reference || typeof reference !== "string") throw new BadRequestException("Stripe session missing payment reference");
+    if (dto.reference && dto.reference !== reference) throw new BadRequestException("Stripe session reference does not match checkout");
+    if (session.status && session.status !== "complete") throw new BadRequestException("Stripe checkout session is not complete");
+
+    const payment = await this.prisma.accountPaymentRequest.findUnique({ where: { reference } });
+    if (!payment) throw new NotFoundException("Payment request not found");
+    if (payment.businessId !== user.businessId) throw new ForbiddenException("Payment request does not belong to this business");
+    if (payment.stripeCheckoutSessionId && payment.stripeCheckoutSessionId !== sessionId) throw new BadRequestException("Stripe session does not match payment request");
+
+    return this.handleStripeCheckoutSession(session, false);
   }
 
   private async handleStripeCheckoutSession(session: any, asyncPaymentSucceeded: boolean) {
@@ -2534,8 +2982,9 @@ export class ZentoryService {
         paymentMode: "STRIPE_SUBSCRIPTION",
         currentPeriodStart: period.start ?? current.currentPeriodStart,
         currentPeriodEnd: period.end ?? current.currentPeriodEnd,
+        graceEndsAt: null,
         expiresAt: null
-      }
+      } as any
     });
   }
 
@@ -2544,10 +2993,10 @@ export class ZentoryService {
     if (!subscriptionId) return { received: true, ignored: true };
     const current = await this.prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: subscriptionId } });
     if (!current) return { received: true, ignored: true };
-    const shouldSuspend = current.currentPeriodEnd ? current.currentPeriodEnd.getTime() < Date.now() : false;
+    const graceEndsAt = new Date(Date.now() + PAYMENT_GRACE_DAYS * 24 * 60 * 60 * 1000);
     return this.prisma.businessSubscription.update({
       where: { businessId: current.businessId },
-      data: { status: shouldSuspend ? "SUSPENDED" : current.status }
+      data: { status: "PAST_DUE", graceEndsAt } as any
     });
   }
 
@@ -2571,7 +3020,7 @@ export class ZentoryService {
   private async handleStripeSubscriptionDeleted(subscription: any) {
     const current = await this.prisma.businessSubscription.findFirst({ where: { stripeSubscriptionId: subscription?.id } });
     if (!current) return { received: true, ignored: true };
-    const freePlan = await this.freePlan();
+    const starterPlan = await this.starterPlan();
     const periodEnd = this.stripeTimestamp(subscription.current_period_end) ?? current.currentPeriodEnd;
     if (periodEnd && periodEnd.getTime() > Date.now()) {
       return this.prisma.businessSubscription.update({
@@ -2583,18 +3032,20 @@ export class ZentoryService {
         }
       });
     }
+    const nextStatus = await this.nextExpiredStatusForPlan(current.businessId, starterPlan);
     return this.prisma.businessSubscription.update({
       where: { businessId: current.businessId },
       data: {
-        planId: freePlan.id,
-        status: "EXPIRED",
+        planId: starterPlan.id,
+        status: nextStatus as any,
         paymentMode: "FREE",
         cancelAtPeriodEnd: false,
+        graceEndsAt: null,
         expiresAt: null,
         currentPeriodStart: null,
         currentPeriodEnd: null,
         stripeSubscriptionId: null
-      }
+      } as any
     });
   }
 
@@ -2620,9 +3071,10 @@ export class ZentoryService {
         cancelAtPeriodEnd: false,
         currentPeriodStart: paidAt,
         currentPeriodEnd: expiresAt,
+        graceEndsAt: null,
         expiresAt,
         stripeSubscriptionId: null
-      }
+      } as any
     });
   }
 
@@ -2652,8 +3104,9 @@ export class ZentoryService {
         currentPeriodStart: this.stripeTimestamp(subscription?.current_period_start),
         currentPeriodEnd: this.stripeTimestamp(subscription?.current_period_end),
         cancelAtPeriodEnd: Boolean(subscription?.cancel_at_period_end),
+        graceEndsAt: null,
         expiresAt: null
-      }
+      } as any
     });
   }
 
@@ -2712,9 +3165,9 @@ export class ZentoryService {
   }
 
   private stripePriceId(planCode: string, billingCycle: string) {
-    if (planCode === "PRO" && billingCycle === "monthly") return process.env.STRIPE_PRO_MONTHLY_PRICE_ID;
-    if (planCode === "PRO" && billingCycle === "yearly") return process.env.STRIPE_PRO_YEARLY_PRICE_ID;
-    return undefined;
+    const normalizedPlan = planCode.toUpperCase();
+    const normalizedCycle = billingCycle.toUpperCase();
+    return process.env[`STRIPE_${normalizedPlan}_${normalizedCycle}_PRICE_ID`];
   }
 
   private async createStripeCheckoutSession(user: CurrentUser, payment: any, checkoutMode: "subscription" | "promptpay") {
@@ -2727,7 +3180,7 @@ export class ZentoryService {
       ? await this.prisma.businessSubscription.findUnique({ where: { businessId: payment.businessId }, include: { plan: true } })
       : null;
     const webAppUrl = (process.env.WEB_APP_URL || "http://localhost:5173").replace(/\/$/, "");
-    const successUrl = `${webAppUrl}/checkout?plan=${payment.planCode.toLowerCase()}&payment=success&method=${checkoutMode}&reference=${encodeURIComponent(payment.reference)}&session_id={CHECKOUT_SESSION_ID}`;
+    const successUrl = `${webAppUrl}/checkout/success?plan=${payment.planCode.toLowerCase()}&method=${checkoutMode}&reference=${encodeURIComponent(payment.reference)}&session_id={CHECKOUT_SESSION_ID}`;
     const cancelUrl = `${webAppUrl}/checkout?plan=${payment.planCode.toLowerCase()}&payment=cancelled&method=${checkoutMode}&reference=${encodeURIComponent(payment.reference)}`;
     const params = new URLSearchParams({
       mode: checkoutMode === "promptpay" ? "payment" : "subscription",
@@ -2840,8 +3293,105 @@ export class ZentoryService {
     return undefined;
   }
 
-  private async freePlan() {
-    return this.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: "FREE" } });
+  private async starterPlan() {
+    return this.prisma.subscriptionPlan.findUniqueOrThrow({ where: { code: "STARTER" } });
+  }
+
+  private async planAccess(businessId: string): Promise<PlanAccessSnapshot> {
+    if (
+      !(this.prisma as any).businessSubscription?.findUnique ||
+      !(this.prisma as any).branch?.findMany ||
+      !(this.prisma as any).warehouse?.findMany ||
+      !(this.prisma as any).businessMember?.findMany ||
+      !(this.prisma as any).product?.findMany
+    ) {
+      return {
+        status: "ACTIVE",
+        paymentMode: "FREE",
+        plan: { code: "TEST", name: "Test", productLimit: Number.MAX_SAFE_INTEGER, userLimit: Number.MAX_SAFE_INTEGER, branchLimit: Number.MAX_SAFE_INTEGER, warehouseLimit: Number.MAX_SAFE_INTEGER },
+        capabilities: resolvePlanCapabilities("MULTI_BRANCH"),
+        isLimited: false,
+        allowedBranchIds: [],
+        allowedWarehouseIds: [],
+        lockedBranchIds: [],
+        lockedWarehouseIds: [],
+        lockedMemberIds: [],
+        lockedProductCount: 0,
+        counts: { branches: 0, warehouses: 0, members: 0, products: 0 }
+      };
+    }
+    await this.expirePromptPaySubscriptionIfNeeded(businessId);
+    const subscription = await this.prisma.businessSubscription.findUnique({
+      where: { businessId },
+      include: { plan: true }
+    });
+    const plan = subscription?.plan ?? await this.starterPlan();
+    const [branches, warehouses, members, productCount] = await Promise.all([
+      this.prisma.branch.findMany({ where: { businessId }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
+      this.prisma.warehouse.findMany({ where: { businessId }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
+      this.prisma.businessMember.findMany({ where: { businessId, status: "ACTIVE" as any }, orderBy: [{ role: "asc" }, { createdAt: "asc" }] }),
+      this.getUsedProductLimit(businessId)
+    ]);
+    const activeBranches = branches.filter((branch) => branch.status === "ACTIVE");
+    const selectedBranchId = (subscription as any)?.selectedFreeBranchId;
+    const branchCandidates = selectedBranchId
+      ? [...activeBranches.filter((branch) => branch.id === selectedBranchId), ...activeBranches.filter((branch) => branch.id !== selectedBranchId)]
+      : activeBranches;
+    const allowedBranchIds = branchCandidates.slice(0, plan.branchLimit).map((branch) => branch.id);
+    const activeWarehouses = warehouses.filter((warehouse) => warehouse.status === "ACTIVE" && allowedBranchIds.includes(warehouse.branchId));
+    const selectedWarehouseId = (subscription as any)?.selectedFreeWarehouseId;
+    const warehouseCandidates = selectedWarehouseId
+      ? [...activeWarehouses.filter((warehouse) => warehouse.id === selectedWarehouseId), ...activeWarehouses.filter((warehouse) => warehouse.id !== selectedWarehouseId)]
+      : activeWarehouses;
+    const allowedWarehouseIds = warehouseCandidates.slice(0, plan.warehouseLimit).map((warehouse) => warehouse.id);
+    const ownerMembers = members.filter((member) => member.role === "OWNER");
+    const nonOwnerMembers = members.filter((member) => member.role !== "OWNER");
+    const allowedMemberIds = new Set([...ownerMembers, ...nonOwnerMembers].slice(0, plan.userLimit).map((member) => member.id));
+    const lockedBranchIds = activeBranches.filter((branch) => !allowedBranchIds.includes(branch.id)).map((branch) => branch.id);
+    const lockedWarehouseIds = warehouses.filter((warehouse) => warehouse.status === "ACTIVE" && !allowedWarehouseIds.includes(warehouse.id)).map((warehouse) => warehouse.id);
+    const lockedMemberIds = members.filter((member) => !allowedMemberIds.has(member.id)).map((member) => member.id);
+    const lockedProductCount = Math.max(0, productCount - plan.productLimit);
+    const hasOverLimit = lockedBranchIds.length > 0 || lockedWarehouseIds.length > 0 || lockedMemberIds.length > 0 || lockedProductCount > 0;
+    const status = String(subscription?.status ?? "ACTIVE");
+    return {
+      status,
+      paymentMode: subscription?.paymentMode ?? "FREE",
+      graceEndsAt: (subscription as any)?.graceEndsAt ?? null,
+      plan: {
+        code: plan.code,
+        name: plan.name,
+        productLimit: plan.productLimit,
+        userLimit: plan.userLimit,
+        branchLimit: plan.branchLimit,
+        warehouseLimit: plan.warehouseLimit
+      },
+      capabilities: resolvePlanCapabilities(plan.code),
+      isLimited: status === "LIMITED" || hasOverLimit,
+      allowedBranchIds,
+      allowedWarehouseIds,
+      lockedBranchIds,
+      lockedWarehouseIds,
+      lockedMemberIds,
+      lockedProductCount,
+      counts: {
+        branches: activeBranches.length,
+        warehouses: warehouses.filter((warehouse) => warehouse.status === "ACTIVE").length,
+        members: members.length,
+        products: productCount
+      }
+    };
+  }
+
+  private async nextExpiredStatusForPlan(businessId: string, plan: { code: string; productLimit: number; userLimit: number; branchLimit: number; warehouseLimit: number }) {
+    const [branchCount, warehouseCount, memberCount, productCount] = await Promise.all([
+      this.prisma.branch.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.prisma.warehouse.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.prisma.businessMember.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.getUsedProductLimit(businessId)
+    ]);
+    return branchCount > plan.branchLimit || warehouseCount > plan.warehouseLimit || memberCount > plan.userLimit || productCount > plan.productLimit
+      ? "LIMITED"
+      : "EXPIRED";
   }
 
   private async expirePromptPaySubscriptionIfNeeded(businessId: string) {
@@ -2850,20 +3400,23 @@ export class ZentoryService {
     const now = Date.now();
     const promptPayExpired = subscription.paymentMode === "PROMPTPAY_ONE_TIME" && subscription.expiresAt && subscription.expiresAt.getTime() <= now;
     const canceledSubscriptionExpired = subscription.paymentMode === "STRIPE_SUBSCRIPTION" && subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd && subscription.currentPeriodEnd.getTime() <= now;
-    if (!promptPayExpired && !canceledSubscriptionExpired) return subscription;
-    const freePlan = await this.freePlan();
+    const pastDueGraceExpired = String(subscription.status) === "PAST_DUE" && (subscription as any).graceEndsAt && (subscription as any).graceEndsAt.getTime() <= now;
+    if (!promptPayExpired && !canceledSubscriptionExpired && !pastDueGraceExpired) return subscription;
+    const starterPlan = await this.starterPlan();
+    const nextStatus = await this.nextExpiredStatusForPlan(businessId, starterPlan);
     return this.prisma.businessSubscription.update({
       where: { businessId },
       data: {
-        planId: freePlan.id,
-        status: "EXPIRED",
+        planId: starterPlan.id,
+        status: nextStatus as any,
         paymentMode: "FREE",
         cancelAtPeriodEnd: false,
         currentPeriodStart: null,
         currentPeriodEnd: null,
+        graceEndsAt: null,
         expiresAt: null,
         stripeSubscriptionId: canceledSubscriptionExpired ? null : subscription.stripeSubscriptionId
-      },
+      } as any,
       include: { plan: true }
     });
   }
@@ -2872,7 +3425,7 @@ export class ZentoryService {
     return {
       id: payment.id,
       reference: payment.reference,
-      planCode: payment.planCode,
+      planCode: payment.plan?.code ?? normalizePlanCode(payment.planCode) ?? payment.planCode,
       billingCycle: payment.billingCycle,
       amount: Number(payment.amount),
       currency: payment.currency,
@@ -3044,6 +3597,8 @@ export class ZentoryService {
       select: { id: true }
     });
     if (branches.length !== uniqueBranchIds.length) throw new BadRequestException("พบสาขาที่ไม่พร้อมใช้งานหรือไม่ได้อยู่ในร้านนี้");
+    const access = await this.planAccess(businessId);
+    if (access.isLimited && uniqueBranchIds.some((branchId) => !access.allowedBranchIds.includes(branchId))) throw new BadRequestException(PLAN_LOCKED_BRANCH_ERROR);
     return uniqueBranchIds;
   }
 
@@ -3306,6 +3861,119 @@ export class ZentoryService {
     return where;
   }
 
+  private async productExportRows(user: CurrentUser) {
+    const products = await this.prisma.product.findMany({
+      where: { businessId: user.businessId, status: { in: PRODUCT_MANAGEMENT_STATUSES as any } },
+      include: { category: true, brand: true },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+    return [
+      ["SKU", "ชื่อสินค้า", "หมวดหมู่", "แบรนด์", "หน่วย", "ต้นทุน", "ราคาขาย", "จุดแจ้งเตือน", "สถานะ"],
+      ...products.map((product) => [
+        product.sku,
+        product.name,
+        product.category?.name ?? "",
+        product.brand?.name ?? "",
+        product.unit,
+        Number(product.costPrice),
+        Number(product.salePrice),
+        product.minStock,
+        product.status
+      ])
+    ];
+  }
+
+  private async stockExportRows(user: CurrentUser) {
+    const scope = await this.scopedLocation(user);
+    const balances = await this.prisma.inventoryBalance.findMany({
+      where: { businessId: user.businessId, ...scope.inventoryBalanceWhere },
+      include: { product: true, warehouse: { include: { branch: true } } },
+      orderBy: { updatedAt: "desc" },
+      take: 5000
+    });
+    return [
+      ["สาขา", "คลัง", "SKU", "สินค้า", "คงเหลือ", "จุดแจ้งเตือน", "มูลค่าสต็อก"],
+      ...balances.map((balance) => [
+        balance.warehouse.branch?.name ?? "",
+        balance.warehouse.name,
+        balance.product.sku,
+        balance.product.name,
+        balance.quantity,
+        balance.product.minStock,
+        balance.quantity * Number(balance.product.costPrice)
+      ])
+    ];
+  }
+
+  private async movementExportRows(user: CurrentUser) {
+    const scope = await this.scopedLocation(user);
+    const movements = await this.prisma.stockMovement.findMany({
+      where: { businessId: user.businessId, ...scope.stockMovementWhere },
+      include: { product: true, warehouse: { include: { branch: true } }, user: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+    return [
+      ["วันที่", "ประเภท", "สาขา", "คลัง", "SKU", "สินค้า", "จำนวน", "ก่อน", "หลัง", "ผู้ทำรายการ", "อ้างอิง", "เหตุผล"],
+      ...movements.map((movement) => [
+        movement.createdAt.toISOString(),
+        movement.type,
+        movement.warehouse.branch?.name ?? "",
+        movement.warehouse.name,
+        movement.product.sku,
+        movement.product.name,
+        movement.quantity,
+        movement.balanceBefore ?? "",
+        movement.balanceAfter,
+        movement.user?.name ?? "",
+        movement.reference ?? "",
+        movement.reason ?? ""
+      ])
+    ];
+  }
+
+  private async salesExportRows(user: CurrentUser) {
+    const sales = await this.prisma.sale.findMany({
+      where: { businessId: user.businessId, status: "PAID" as any },
+      include: { items: { include: { product: true } }, branch: true, warehouse: true, user: { select: { name: true } } },
+      orderBy: { createdAt: "desc" },
+      take: 5000
+    });
+    return [
+      ["เลขที่", "วันที่", "สาขา", "คลัง", "คนขาย", "จำนวนชิ้น", "ยอดก่อนส่วนลด", "ส่วนลด", "ยอดสุทธิ", "ต้นทุนขาย", "กำไรขั้นต้น"],
+      ...sales.map((sale) => {
+        const unitCount = sale.items.reduce((sum, item) => sum + item.quantity, 0);
+        const cogs = sale.items.reduce((sum, item) => sum + Number(item.unitCost) * item.quantity, 0);
+        return [
+          sale.receiptNo,
+          sale.createdAt.toISOString(),
+          sale.branch?.name ?? "",
+          sale.warehouse?.name ?? "",
+          sale.user?.name ?? "",
+          unitCount,
+          Number(sale.subtotal),
+          Number(sale.discount),
+          Number(sale.total),
+          cogs,
+          Number(sale.total) - cogs
+        ];
+      })
+    ];
+  }
+
+  private toExcelHtml(title: string, rows: Array<Array<string | number>>) {
+    const escape = (value: string | number) => String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+    const [headers = [], ...bodyRows] = rows;
+    const headerHtml = headers.map((cell) => `<th>${escape(cell)}</th>`).join("");
+    const rowHtml = bodyRows.map((row) => `<tr>${row.map((cell) => `<td>${escape(cell)}</td>`).join("")}</tr>`).join("");
+    return `\uFEFF<html><head><meta charset="utf-8"><style>table{border-collapse:collapse}td,th{border:1px solid #999;padding:6px}th{background:#f2f2f2}</style></head><body><h1>${escape(title)}</h1><table><thead><tr>${headerHtml}</tr></thead><tbody>${rowHtml}</tbody></table></body></html>`;
+  }
+
   private toCsv(rows: string[][]) {
     const body = rows.map((row) => row.map((cell) => `"${String(cell).replace(/"/g, "\"\"")}"`).join(",")).join("\n");
     return `\uFEFF${body}\n`;
@@ -3486,6 +4154,20 @@ export class ZentoryService {
     return result;
   }
 
+  private optionalVariantValues(values?: string[]) {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    for (const rawValue of values ?? []) {
+      const value = rawValue.trim();
+      if (!value) continue;
+      const key = value.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push(value);
+    }
+    return result;
+  }
+
   private variantKey(color: string, size: string) {
     return `${color.trim().toLowerCase()}\u0000${size.trim().toLowerCase()}`;
   }
@@ -3536,7 +4218,7 @@ export class ZentoryService {
   private async enforceProductLimit(businessId: string) {
     const subscription = await this.expirePromptPaySubscriptionIfNeeded(businessId);
     const productCount = await this.getUsedProductLimit(businessId);
-    if (subscription && productCount >= subscription.plan.productLimit) throw new BadRequestException(PRODUCT_LIMIT_ERROR);
+    if (subscription && productCount >= (subscription as any).plan.productLimit) throw new BadRequestException(PRODUCT_LIMIT_ERROR);
   }
 
   private async enforceProductLimitForNewProducts(businessId: string, newProductCount: number) {
@@ -3544,7 +4226,7 @@ export class ZentoryService {
     const subscription = await this.expirePromptPaySubscriptionIfNeeded(businessId);
     if (!subscription) return;
     const productCount = await this.getUsedProductLimit(businessId);
-    if (productCount + newProductCount > subscription.plan.productLimit) throw new BadRequestException(PRODUCT_LIMIT_ERROR);
+    if (productCount + newProductCount > (subscription as any).plan.productLimit) throw new BadRequestException(PRODUCT_LIMIT_ERROR);
   }
 
   private productListStatuses(status?: string) {
@@ -3586,6 +4268,10 @@ export class ZentoryService {
   private assertTransferManagerRole(user: CurrentUser) {
     if (user.isSystemAdmin || user.role === "OWNER" || user.role === "MANAGER" || user.role === "BRANCH_MANAGER") return;
     throw new ForbiddenException("Requires manager permission");
+  }
+
+  private canApproveStockAdjustment(user: CurrentUser) {
+    return Boolean(user.isSystemAdmin || user.role === "OWNER" || user.role === "MANAGER" || user.role === "BRANCH_MANAGER");
   }
 
   private async ensureMissingBranchDefaultWarehouses(businessId: string) {
@@ -3655,6 +4341,9 @@ export class ZentoryService {
   }
 
   private async auditProductUpdate(user: CurrentUser, beforeProduct: Record<string, any>, after: Record<string, any>) {
+    const before = this.productAuditSnapshot(beforeProduct);
+    const afterSnapshot = this.productAuditSnapshot({ ...beforeProduct, ...after });
+    if (this.auditSnapshotsEqual(before, afterSnapshot)) return;
     await this.prisma.auditLog?.create?.({
       data: {
         businessId: user.businessId,
@@ -3662,10 +4351,157 @@ export class ZentoryService {
         action: "product.update",
         entity: "Product",
         entityId: beforeProduct.id,
-        before: this.productAuditSnapshot(beforeProduct),
-        after: this.productAuditSnapshot({ ...beforeProduct, ...after })
+        before,
+        after: afterSnapshot
       }
     });
+  }
+
+  private adjustmentInclude() {
+    return {
+      warehouse: { include: { branch: { select: { id: true, name: true, code: true } } } },
+      product: { select: { id: true, name: true, sku: true, unit: true, minStock: true } },
+      user: { select: { id: true, name: true, email: true } },
+      reviewedBy: { select: { id: true, name: true, email: true } }
+    };
+  }
+
+  private stockAdjustmentStatus(status?: string) {
+    if (!status || status === "ALL") return undefined;
+    if (status === "PENDING" || status === "APPROVED" || status === "REJECTED") return status;
+    throw new BadRequestException("Invalid adjustment status");
+  }
+
+  private serializeAdjustment(adjustment: any) {
+    return this.compactObject({
+      id: adjustment.id,
+      documentNo: adjustment.documentNo,
+      status: adjustment.status,
+      quantity: adjustment.quantity,
+      adjustmentMode: adjustment.adjustmentMode,
+      targetQuantity: adjustment.targetQuantity,
+      reason: adjustment.reason,
+      rejectionReason: adjustment.rejectionReason,
+      createdAt: adjustment.createdAt,
+      reviewedAt: adjustment.reviewedAt,
+      warehouse: adjustment.warehouse,
+      branch: adjustment.warehouse?.branch,
+      product: adjustment.product,
+      requestedBy: adjustment.user,
+      reviewedBy: adjustment.reviewedBy
+    });
+  }
+
+  private compactObject<T extends Record<string, any>>(value: T) {
+    return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as Partial<T>;
+  }
+
+  private adjustmentAuditSnapshot(adjustment: any, extras: { stockOnHand?: number } = {}) {
+    return {
+      documentNo: adjustment.documentNo,
+      status: adjustment.status,
+      warehouseId: adjustment.warehouseId,
+      warehouseName: adjustment.warehouse?.name ?? null,
+      branchId: adjustment.warehouse?.branchId ?? adjustment.warehouse?.branch?.id ?? null,
+      branchName: adjustment.warehouse?.branch?.name ?? null,
+      productId: adjustment.productId,
+      productName: adjustment.product?.name ?? null,
+      productSku: adjustment.product?.sku ?? null,
+      quantity: adjustment.quantity,
+      adjustmentMode: adjustment.adjustmentMode,
+      targetQuantity: adjustment.targetQuantity,
+      stockOnHand: extras.stockOnHand,
+      reason: adjustment.reason,
+      reviewedById: adjustment.reviewedById ?? null,
+      reviewedByName: adjustment.reviewedBy?.name ?? null,
+      reviewedByEmail: adjustment.reviewedBy?.email ?? null,
+      reviewedAt: adjustment.reviewedAt ?? null,
+      rejectionReason: adjustment.rejectionReason ?? null
+    };
+  }
+
+  private async writeAuditLog(user: CurrentUser, action: string, entity: string, entityId: string | null, before: unknown, after: unknown) {
+    await this.prisma.auditLog?.create?.({
+      data: {
+        businessId: user.businessId,
+        userId: user.userId,
+        action,
+        entity,
+        entityId,
+        before: before === null ? undefined : before as Prisma.InputJsonValue,
+        after: after === null ? undefined : after as Prisma.InputJsonValue
+      }
+    });
+  }
+
+  private async currentStockOnHand(tx: Prisma.TransactionClient, businessId: string, warehouseId: string, productId: string) {
+    const current = await tx.inventoryBalance.findUnique({ where: { businessId_warehouseId_productId: { businessId, warehouseId, productId } } });
+    return current?.quantity ?? 0;
+  }
+
+  private async auditStockMovements(user: CurrentUser, rows: Array<{ entity: string; after: unknown }>) {
+    const references = rows
+      .filter((row) => row.entity === "StockAdjustment")
+      .map((row) => this.jsonObject(row.after as Prisma.JsonValue).documentNo)
+      .filter((value): value is string => typeof value === "string");
+    if (references.length === 0 || !user.businessId) return new Map<string, { balanceBefore: number | null; balanceAfter: number }>();
+    const movements = await this.prisma.stockMovement.findMany({
+      where: {
+        businessId: user.businessId,
+        reference: { in: [...new Set(references)] },
+        type: { in: ["ADJUSTMENT_IN", "ADJUSTMENT_OUT"] as any }
+      },
+      select: { reference: true, balanceBefore: true, balanceAfter: true }
+    });
+    return new Map(movements.filter((movement) => movement.reference).map((movement) => [movement.reference!, { balanceBefore: movement.balanceBefore, balanceAfter: movement.balanceAfter }]));
+  }
+
+  private enrichAuditStockSnapshot(row: { entity: string; before: unknown; after: unknown }, stockMovements: Map<string, { balanceBefore: number | null; balanceAfter: number }>) {
+    if (row.entity !== "StockAdjustment") return row;
+    const before = this.jsonObject(row.before as Prisma.JsonValue);
+    const after = this.jsonObject(row.after as Prisma.JsonValue);
+    if (before.stockOnHand !== undefined || after.stockOnHand !== undefined) return row;
+    const movement = typeof after.documentNo === "string" ? stockMovements.get(after.documentNo) : undefined;
+    if (movement) {
+      return {
+        ...row,
+        before: { ...before, stockOnHand: movement.balanceBefore ?? undefined },
+        after: { ...after, stockOnHand: movement.balanceAfter }
+      };
+    }
+    if (typeof after.targetQuantity === "number" && typeof after.quantity === "number") {
+      return {
+        ...row,
+        before: { ...before, stockOnHand: after.targetQuantity - after.quantity },
+        after: { ...after, stockOnHand: after.targetQuantity }
+      };
+    }
+    return row;
+  }
+
+  private sanitizeAuditPayload(entity: string, payload: unknown) {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+    const allowedFields = auditPayloadFields[entity] ?? auditPayloadFields.default;
+    return Object.fromEntries(
+      Object.entries(payload as Record<string, unknown>)
+        .filter(([field]) => allowedFields.has(field))
+        .map(([field, value]) => [field, this.sanitizeAuditValue(value)])
+    );
+  }
+
+  private sanitizeAuditValue(value: unknown): unknown {
+    if (value === null || value === undefined) return value;
+    if (Array.isArray(value)) return value.map((item) => this.sanitizeAuditValue(item));
+    if (typeof value !== "object") return value;
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([field]) => !sensitiveAuditFields.test(field))
+        .map(([field, entry]) => [field, this.sanitizeAuditValue(entry)])
+    );
+  }
+
+  private auditSnapshotsEqual(before: unknown, after: unknown) {
+    return JSON.stringify(before ?? null) === JSON.stringify(after ?? null);
   }
 
   private productAuditSnapshot(product: Record<string, any>) {
@@ -3675,7 +4511,9 @@ export class ZentoryService {
       barcode: product.barcode ?? null,
       description: product.description ?? null,
       categoryId: product.categoryId ?? null,
+      categoryName: product.categoryName ?? product.category?.name ?? null,
       brandId: product.brandId ?? null,
+      brandName: product.brandName ?? product.brand?.name ?? null,
       unit: product.unit,
       costPrice: product.costPrice === undefined ? undefined : Number(product.costPrice),
       salePrice: product.salePrice === undefined ? undefined : Number(product.salePrice),
@@ -3686,22 +4524,22 @@ export class ZentoryService {
   private async enforceUserLimit(businessId: string) {
     const subscription = await this.expirePromptPaySubscriptionIfNeeded(businessId);
     const memberCount = await this.prisma.businessMember.count({ where: { businessId, status: "ACTIVE" } });
-    if (subscription && memberCount >= subscription.plan.userLimit) throw new BadRequestException("User limit reached for current plan");
+    if (subscription && memberCount >= (subscription as any).plan.userLimit) throw new BadRequestException("User limit reached for current plan");
   }
 
   private async enforceBranchLimit(businessId: string) {
     const subscription = await this.expirePromptPaySubscriptionIfNeeded(businessId);
     const branchCount = await this.prisma.branch.count({ where: { businessId } });
-    if (subscription && branchCount >= subscription.plan.branchLimit) {
-      throw new BadRequestException(`แพ็กเกจ ${subscription.plan.name} เพิ่มสาขาได้สูงสุด ${subscription.plan.branchLimit} สาขา กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มสาขา`);
+    if (subscription && branchCount >= (subscription as any).plan.branchLimit) {
+      throw new BadRequestException(`แพ็กเกจ ${(subscription as any).plan.name} เพิ่มสาขาได้สูงสุด ${(subscription as any).plan.branchLimit} สาขา กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มสาขา`);
     }
   }
 
   private async enforceWarehouseLimit(businessId: string) {
     const subscription = await this.expirePromptPaySubscriptionIfNeeded(businessId);
     const warehouseCount = await this.prisma.warehouse.count({ where: { businessId } });
-    if (subscription && warehouseCount >= subscription.plan.warehouseLimit) {
-      throw new BadRequestException(`แพ็กเกจ ${subscription.plan.name} เพิ่มคลังได้สูงสุด ${subscription.plan.warehouseLimit} คลัง กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มคลัง`);
+    if (subscription && warehouseCount >= (subscription as any).plan.warehouseLimit) {
+      throw new BadRequestException(`แพ็กเกจ ${(subscription as any).plan.name} เพิ่มคลังได้สูงสุด ${(subscription as any).plan.warehouseLimit} คลัง กรุณาอัปเกรดแพ็กเกจเพื่อเพิ่มคลัง`);
     }
   }
 

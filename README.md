@@ -27,9 +27,10 @@ Authorization: Bearer <access-token>
 Content-Type: application/json
 
 {
-  "planCode": "PRO",
+  "planCode": "PROFESSIONAL",
   "billingCycle": "monthly",
-  "provider": "manual"
+  "checkoutMode": "subscription",
+  "provider": "stripe"
 }
 ```
 
@@ -43,13 +44,21 @@ Content-Type: application/json
 {
   "reference": "ZT-...",
   "status": "PAID",
-  "amount": 590,
+  "amount": 899,
   "currency": "THB",
   "provider": "bank-transfer",
   "providerPaymentId": "txn_123"
 }
 ```
 
+## Production Deploy Notes
+
+Use `npm run db:migrate:deploy` for production/staging migrations. Do not run `prisma migrate dev` against a live database.
+
+Required production env is documented in `.env.production.example`. The API rejects `NODE_ENV=production` boots when required secrets still use placeholder or localhost values.
+
+Health checks can call `GET /api/v1/health`.
+
 ## MVP Boundaries
 
-v1 supports one active branch per business while keeping the `Branch` model ready for expansion. FIFO, lots, expiry, offline mode, direct payment-gateway SDK integration, marketplace sync, and advanced barcode printing are intentionally out of scope.
+v1 supports paid Starter, Professional, and Multi-Branch accounts with subscription limits. FIFO, lots, expiry, offline mode, marketplace sync, and advanced barcode printing are intentionally out of scope.

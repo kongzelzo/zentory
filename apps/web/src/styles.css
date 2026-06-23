@@ -22,6 +22,7 @@ textarea {
 }
 
 .table-shell {
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid rgb(220 225 216);
   background: white;
@@ -70,4 +71,32 @@ textarea {
 .field:focus {
   border-color: #0f766e;
   box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.14);
+}
+
+.stable-scrollbar {
+  scrollbar-color: rgb(148 163 184) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  -webkit-overflow-scrolling: touch;
+}
+
+.stable-scrollbar::-webkit-scrollbar {
+  width: 10px;
+}
+
+.stable-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.stable-scrollbar::-webkit-scrollbar-thumb {
+  background: rgb(203 213 225);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+.stable-scrollbar:hover::-webkit-scrollbar-thumb {
+  background: rgb(148 163 184);
+  border: 3px solid transparent;
+  background-clip: content-box;
 }

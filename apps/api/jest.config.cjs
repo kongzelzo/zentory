@@ -5,5 +5,8 @@ module.exports = {
   transform: {
     "^.+\\.(t|j)s$": "ts-jest"
   },
+  moduleNameMapper: {
+    "^@zentory/shared$": "<rootDir>/../../packages/shared/src"
+  },
   testEnvironment: "node"
 };

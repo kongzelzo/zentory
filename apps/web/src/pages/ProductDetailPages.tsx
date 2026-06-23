@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, Archive, ArrowLeft, Ban, Boxes, ChevronDown, Image as ImageIcon, Maximize2, PauseCircle, Pencil, ReceiptText, RotateCcw, Save, ScanLine, Trash2, X } from "lucide-react";
-import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { BarcodeScanner } from "../components/BarcodeScanner";
 import { Button } from "../components/Button";
@@ -59,9 +59,16 @@ const editableStatuses: Array<{ value: "ACTIVE" | "PAUSED" | "DISCONTINUED"; lab
   { value: "DISCONTINUED", label: "ปิดขาย" }
 ];
 
+const duplicateBarcodeMessage = "Barcode นี้ถูกใช้แล้ว กรุณาใช้ barcode อื่น";
+
 function textValue(form: FormData, name: string) {
   const value = String(form.get(name) ?? "").trim();
   return value || undefined;
+}
+
+function nullableTextValue(form: FormData, name: string) {
+  const value = String(form.get(name) ?? "").trim();
+  return value || null;
 }
 
 function numberValue(form: FormData, name: string) {
@@ -401,6 +408,7 @@ export function ProductEditPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [error, setError] = useState("");
+  const [duplicateBarcodeError, setDuplicateBarcodeError] = useState("");
   const [selectedImage, setSelectedImage] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState("");
   const [removeImage, setRemoveImage] = useState(false);
@@ -409,6 +417,7 @@ export function ProductEditPage() {
   const [saleInput, setSaleInput] = useState("");
   const [barcodeInput, setBarcodeInput] = useState("");
   const [isScannerOpen, setIsScannerOpen] = useState(false);
+  const barcodeInputRef = useRef<HTMLInputElement | null>(null);
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
   const product = useQuery({ queryKey: ["product", id, workingBranchId], queryFn: () => api<ProductDetail>(branchScopedPath(`/products/${id}`, workingBranchId)), enabled: Boolean(id) });
   const mutation = useMutation({
@@ -426,7 +435,15 @@ export function ProductEditPage() {
       queryClient.invalidateQueries({ queryKey: ["stock-report"] });
       navigate(`/app/products/${id}`);
     },
-    onError: (err) => setError(err.message)
+    onError: (err) => {
+      if (err.message === duplicateBarcodeMessage) {
+        setError("");
+        setDuplicateBarcodeError(err.message);
+        return;
+      }
+      setDuplicateBarcodeError("");
+      setError(err.message);
+    }
   });
 
   useEffect(() => {
@@ -446,6 +463,22 @@ export function ProductEditPage() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isDirty]);
 
+  useEffect(() => {
+    if (!duplicateBarcodeError) return;
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") setDuplicateBarcodeError("");
+    }
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [duplicateBarcodeError]);
+
+  function closeDuplicateBarcodePopup(focusBarcode = false) {
+    setDuplicateBarcodeError("");
+    if (focusBarcode) {
+      window.setTimeout(() => barcodeInputRef.current?.focus(), 0);
+    }
+  }
+
   function confirmLeave() {
     return !isDirty || window.confirm("คุณมีข้อมูลที่ยังไม่ได้บันทึก ต้องการออกจากหน้านี้หรือไม่?");
   }
@@ -459,6 +492,7 @@ export function ProductEditPage() {
     const file = event.target.files?.[0] ?? null;
     const validation = validateProductImageFile(file);
     if (validation) {
+      setDuplicateBarcodeError("");
       setError(validation);
       event.target.value = "";
       return;
@@ -479,6 +513,8 @@ export function ProductEditPage() {
       name: product.data.name,
       sku: product.data.sku,
       barcode: barcodeInput,
+      variantColor: product.data.variantColor ?? "",
+      variantSize: product.data.variantSize ?? "",
       categoryName: product.data.category?.name ?? "",
       brandName: product.data.brand?.name ?? "",
       unit: product.data.unit,
@@ -491,6 +527,7 @@ export function ProductEditPage() {
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError("");
+    setDuplicateBarcodeError("");
     const form = new FormData(event.currentTarget);
     const name = textValue(form, "name");
     const sku = textValue(form, "sku");
@@ -515,6 +552,8 @@ export function ProductEditPage() {
       name,
       sku,
       barcode: textValue(form, "barcode"),
+      variantColor: nullableTextValue(form, "variantColor"),
+      variantSize: nullableTextValue(form, "variantSize"),
       categoryName: textValue(form, "categoryName"),
       brandName: textValue(form, "brandName"),
       unit: textValue(form, "unit") ?? "ชิ้น",
@@ -543,10 +582,41 @@ export function ProductEditPage() {
         onDetected={(code) => {
           setBarcodeInput(code);
           setError("");
+          setDuplicateBarcodeError("");
           setIsDirty(true);
         }}
         onClose={() => setIsScannerOpen(false)}
       />
+      {duplicateBarcodeError ? (
+        <div
+          className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="duplicate-barcode-title"
+          onMouseDown={() => closeDuplicateBarcodePopup()}
+        >
+          <div className="w-full max-w-md rounded-md bg-white p-5 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start gap-3">
+              <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-red-50 text-red-700">
+                <AlertCircle size={22} />
+              </span>
+              <div className="min-w-0">
+                <h2 id="duplicate-barcode-title" className="text-lg font-black text-ink">บาร์โค้ดซ้ำ</h2>
+                <p className="mt-1 text-sm font-semibold text-red-700">{duplicateBarcodeError}</p>
+                <p className="mt-2 text-sm text-stone-600">กรุณาเปลี่ยนเลขบาร์โค้ดก่อนบันทึกสินค้าอีกครั้ง</p>
+              </div>
+            </div>
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="secondary" onClick={() => closeDuplicateBarcodePopup()}>
+                ปิด
+              </Button>
+              <Button type="button" onClick={() => closeDuplicateBarcodePopup(true)}>
+                แก้ไขบาร์โค้ด
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <button type="button" onClick={cancelEdit} className="inline-flex items-center gap-2 text-sm font-semibold text-stone-500 hover:text-ink">
@@ -596,14 +666,20 @@ export function ProductEditPage() {
             </label>
             <Field name="name" label="ชื่อสินค้า *" value={fieldValues.name} required />
             <Field name="sku" label="SKU *" value={fieldValues.sku} required />
+            <Field name="variantColor" label="สี" value={fieldValues.variantColor} />
+            <Field name="variantSize" label="ไซส์" value={fieldValues.variantSize} />
             <label className="block">
               <span className="text-sm font-semibold text-ink">Barcode</span>
               <div className="mt-1 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]">
                 <input
+                  ref={barcodeInputRef}
                   className="field"
                   name="barcode"
                   value={barcodeInput}
-                  onChange={(event) => setBarcodeInput(event.target.value)}
+                  onChange={(event) => {
+                    setBarcodeInput(event.target.value);
+                    setDuplicateBarcodeError("");
+                  }}
                   placeholder="สแกนหรือพิมพ์เลขบาร์โค้ด"
                 />
                 <Button type="button" variant="secondary" icon={<ScanLine size={16} />} onClick={() => setIsScannerOpen(true)}>

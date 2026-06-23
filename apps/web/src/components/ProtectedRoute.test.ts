@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AuthSession, EffectivePermissions, Role } from "@zentory/shared";
 import { getProtectedRouteRedirect } from "../lib/protected-route";
 import { markProfileSetupCompleted } from "../lib/onboarding";
+import { createDemoSession } from "../lib/local-demo";
 
 const baseSession: AuthSession = {
   accessToken: "access",
@@ -171,15 +172,57 @@ describe("getProtectedRouteRedirect", () => {
     expect(getProtectedRouteRedirect("/app/branches/branch_1/edit", session("VIEWER", undefined, true))).toBeUndefined();
   });
 
-  it("allows transfer requests only for owners and managers", () => {
-    expect(getProtectedRouteRedirect("/app/transfers/requests", session("OWNER"))).toBeUndefined();
-    expect(getProtectedRouteRedirect("/app/transfers/requests", session("MANAGER"))).toBeUndefined();
-    expect(getProtectedRouteRedirect("/app/transfers/requests", session("BRANCH_MANAGER"))).toBeUndefined();
+  it("allows approval pages only for owners and managers with inventory read access", () => {
+    expect(getProtectedRouteRedirect("/app/transfers/requests", session("OWNER", { "inventory.read": true }))).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/transfers/requests", session("MANAGER", { "inventory.read": true }))).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/activity-approvals", session("BRANCH_MANAGER", { "inventory.read": true }))).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/activity-approvals", session("MANAGER", {
+      "reports.dashboard.read": true,
+      "inventory.read": false
+    }))).toBe("/app/dashboard");
     expect(getProtectedRouteRedirect("/app/transfers/requests", session("STOCK_STAFF"))).toBe("/app/dashboard");
     expect(getProtectedRouteRedirect("/app/transfers/requests", session("CASHIER"))).toBe("/app/dashboard");
   });
 
+  it("allows audit log only for owners and system admins", () => {
+    expect(getProtectedRouteRedirect("/app/audit-log", session("OWNER"))).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/audit-log", session("VIEWER", undefined, true))).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/audit-log", session("MANAGER"))).toBe("/app/dashboard");
+    expect(getProtectedRouteRedirect("/app/audit-log", session("BRANCH_MANAGER"))).toBe("/app/dashboard");
+    expect(getProtectedRouteRedirect("/app/audit-log", session("CASHIER"))).toBe("/app/dashboard");
+  });
+
   it("allows routes without a route permission policy", () => {
     expect(getProtectedRouteRedirect("/app/profile", session("VIEWER", noPermissions))).toBeUndefined();
+  });
+
+  it("allows demo sessions into core routes and blocks non-core routes", () => {
+    const demoSession = createDemoSession();
+
+    expect(getProtectedRouteRedirect("/app/dashboard", demoSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/pos", demoSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/products/product_1", demoSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/reports/sales", demoSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/warehouses", demoSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/profile/billing", demoSession)).toBe("/app/dashboard");
+    expect(getProtectedRouteRedirect("/app/audit-log", demoSession)).toBe("/app/dashboard");
+    expect(getProtectedRouteRedirect("/app/data-backup", demoSession)).toBe("/app/dashboard");
+    expect(getProtectedRouteRedirect("/admin", demoSession)).toBe("/app/dashboard");
+  });
+
+  it("sends plan-locked members to the limited access page", () => {
+    const lockedSession = session("CASHIER", { "reports.dashboard.read": true, "subscription.manage": true });
+    lockedSession.business!.planAccess = {
+      status: "LIMITED",
+      paymentMode: "FREE",
+      isLimited: true,
+      allowedBranchIds: ["branch_main"],
+      allowedWarehouseIds: ["warehouse_main"],
+      memberLocked: true
+    };
+    expect(getProtectedRouteRedirect("/app/dashboard", lockedSession)).toBe("/app/plan-limited");
+    expect(getProtectedRouteRedirect("/app/plan-limited", lockedSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/profile", lockedSession)).toBeUndefined();
+    expect(getProtectedRouteRedirect("/app/profile/billing", lockedSession)).toBeUndefined();
   });
 });

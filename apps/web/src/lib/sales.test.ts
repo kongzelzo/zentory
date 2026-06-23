@@ -46,6 +46,25 @@ describe("sales helpers", () => {
     expect(buildSalesQuery({ page: 2, limit: 50, search: " SALE-001 ", dateFilter: "all" })).toBe("page=2&limit=50&q=SALE-001");
   });
 
+  it("builds branch, warehouse, and preset date filters for reports", () => {
+    const query = buildSalesQuery({
+      page: 1,
+      limit: 100,
+      dateFilter: "30d",
+      branchId: "branch_1",
+      warehouseId: "warehouse_1"
+    });
+
+    expect(query).toContain("branchId=branch_1");
+    expect(query).toContain("warehouseId=warehouse_1");
+    expect(query).toContain("dateFrom=");
+    expect(query).toContain("dateTo=");
+  });
+
+  it("can explicitly request all-time report data", () => {
+    expect(buildSalesQuery({ page: 1, limit: 100, dateFilter: "all", allTime: true })).toBe("page=1&limit=100&allTime=1");
+  });
+
   it("derives inclusive date ranges for preset filters", () => {
     expect(getSalesDateRange("7d", new Date("2026-06-14T15:30:00.000Z"))).toEqual({
       dateFrom: "2026-06-07T17:00:00.000Z",

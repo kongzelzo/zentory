@@ -105,6 +105,12 @@ export function filterBranchSummaries(summaries: BranchSummary[], filters: { sea
   });
 }
 
+export function canCreateWarehouseForPlan(input: { warehouseCount: number; warehouseLimit?: number; allowedWarehouseIds?: string[] }) {
+  if (typeof input.warehouseLimit === "number" && input.warehouseLimit > 0) return input.warehouseCount < input.warehouseLimit;
+  if (input.allowedWarehouseIds?.length) return input.warehouseCount < input.allowedWarehouseIds.length;
+  return true;
+}
+
 export function stockStatusOf(balance: BranchBalanceRecord) {
   if (balance.quantity <= 0) return "หมดสต็อก";
   if (balance.quantity <= balance.product.minStock) return "ใกล้หมด";

@@ -4,6 +4,7 @@ import type { ComponentProps } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link as RouterLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
+import { clearLocalDemo, isDemoSession } from "../lib/local-demo";
 import { useAuth } from "../state/auth";
 import { Button } from "./Button";
 
@@ -67,6 +68,7 @@ export function PublicLayout() {
 
   function signOut() {
     closeMenus();
+    if (isDemoSession(session)) clearLocalDemo();
     clear();
     navigate("/login");
   }

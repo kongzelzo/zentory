@@ -6,7 +6,7 @@ import { Card } from "../components/Card";
 import { Dropdown, type DropdownOption } from "../components/Dropdown";
 import { api } from "../lib/api";
 import { number, thaiDate } from "../lib/format";
-import { notificationBadgeClass, notificationListPath, notificationStatusLabel, notificationTypeLabel, type NotificationItem, type NotificationPage, type NotificationType } from "../lib/notifications";
+import { notificationDisplayTitle, notificationDisplayTypeLabel, notificationItemBadgeClass, notificationListPath, notificationStatusLabel, type NotificationItem, type NotificationPage, type NotificationType } from "../lib/notifications";
 
 type BranchOption = { id: string; name: string; code?: string; status?: string };
 
@@ -104,25 +104,17 @@ function NotificationHistoryRow({ item }: { item: NotificationItem }) {
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-2">
-          <span className={`rounded px-2 py-0.5 text-xs font-black ring-1 ${notificationBadgeClass(notification.type, notification.severity)}`}>
+          <span className={`rounded px-2 py-0.5 text-xs font-black ring-1 ${notificationItemBadgeClass(item)}`}>
             {notificationDisplayTypeLabel(item)}
           </span>
           {notification.branch?.name ? <span className="rounded bg-stone-100 px-2 py-0.5 text-xs font-black text-stone-700">{notification.branch.name}</span> : null}
           <span className="text-xs font-semibold text-stone-500">{notificationStatusLabel(item)}</span>
         </span>
-        <span className="mt-2 block truncate font-black text-ink">{notification.title}</span>
+        <span className="mt-2 block truncate font-black text-ink">{notificationDisplayTitle(item)}</span>
         <span className="mt-1 block truncate text-sm text-stone-600">
           {notification.body ? `${notification.body} • ` : ""}{thaiDate(notification.createdAt)}
         </span>
       </span>
     </div>
   );
-}
-
-function notificationDisplayTypeLabel(item: NotificationItem) {
-  const notification = item.notification;
-  if (notification.type === "TRANSFER_REQUEST" && (notification.dedupeKey?.startsWith("transfer-receive:") || notification.title.includes("รอยืนยันรับ"))) {
-    return "รอยืนยันรับสินค้า";
-  }
-  return notificationTypeLabel(notification.type);
 }

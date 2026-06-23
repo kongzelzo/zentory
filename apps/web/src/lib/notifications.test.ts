@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getNotificationBranchId, notificationAuditPath, notificationListPath, notificationSummaryPath } from "./notifications";
+import { getNotificationBranchId, notificationAuditPath, notificationDisplayTitle, notificationDisplayTypeLabel, notificationItemBadgeClass, notificationListPath, notificationSummaryPath, type NotificationItem } from "./notifications";
 
 const branches = [{ id: "main" }, { id: "moon" }];
 
@@ -40,5 +40,43 @@ describe("getNotificationBranchId", () => {
 
   it("uses store-wide notifications on store-level pages", () => {
     expect(getNotificationBranchId(branches, "moon", true)).toBeUndefined();
+  });
+});
+
+describe("stock adjustment request notifications", () => {
+  const item: NotificationItem = {
+    id: "user_notification_1",
+    readAt: null,
+    archivedAt: null,
+    createdAt: "2026-06-19T13:57:00.000Z",
+    notification: {
+      id: "notification_1",
+      businessId: "business_1",
+      branchId: "branch_1",
+      type: "SYSTEM",
+      severity: "WARNING",
+      title: "คำขอปรับสต็อก ADJ-20260619-BB9F62C8 รออนุมัติ",
+      body: "ทดสอบ01 • เพิ่ม 2 • ขอโดย zerzo zero",
+      actionHref: "/app/activity-approvals",
+      entityType: "StockAdjustment",
+      entityId: "adjustment_1",
+      dedupeKey: "stock-adjustment-request:adjustment_1",
+      resolvedAt: null,
+      createdAt: "2026-06-19T13:57:00.000Z",
+      updatedAt: "2026-06-19T13:57:00.000Z",
+      branch: { id: "branch_1", name: "สาขาหลัก", code: "MAIN" }
+    }
+  };
+
+  it("labels approval work instead of generic system notifications", () => {
+    expect(notificationDisplayTypeLabel(item)).toBe("รออนุมัติ");
+  });
+
+  it("uses the approval color instead of warning yellow", () => {
+    expect(notificationItemBadgeClass(item)).toContain("bg-indigo-50");
+  });
+
+  it("shows the requested product and quantity before the document number", () => {
+    expect(notificationDisplayTitle(item)).toBe("ทดสอบ01 ขอเพิ่มสต็อก 2");
   });
 });

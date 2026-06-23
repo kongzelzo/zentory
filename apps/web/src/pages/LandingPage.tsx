@@ -11,9 +11,10 @@ import {
   Smartphone
 } from "lucide-react";
 import type { ComponentProps } from "react";
-import { Link as RouterLink } from "react-router-dom";
+import { Link as RouterLink, useNavigate } from "react-router-dom";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
+import { startLocalDemo } from "../lib/local-demo";
 import { useAuth } from "../state/auth";
 
 const painPoints = [
@@ -52,10 +53,83 @@ const faqs: Array<[string, string]> = [
   ["ต้องติดตั้งโปรแกรมไหม?", "ไม่ต้อง ใช้งานผ่านเว็บได้ทั้งมือถือ แท็บเล็ต และคอมพิวเตอร์"],
   ["ใช้มือถือได้ไหม?", "ได้ หน้าเว็บออกแบบให้รองรับมือถือ โดยเฉพาะงานขาย รับเข้า และดูแจ้งเตือน"],
   ["ข้อมูลร้านจะปนกับร้านอื่นไหม?", "ไม่ ข้อมูลแต่ละร้านถูกออกแบบให้แยกกันตามร้านค้า"],
-  ["มีแพ็กเกจฟรีไหม?", "มี สำหรับทดลองใช้งานเบื้องต้นก่อนอัปเกรดเมื่อร้านพร้อม"],
+  ["มีแพ็กเกจฟรีไหม?", "ไม่มีแล้ว Zentory ใช้แพ็กเกจแบบชำระเงินสำหรับร้านที่ต้องการใช้งานจริง"],
   ["ถ้าเลิกใช้ ข้อมูลจะหายไหม?", "v1 จะเตรียมแนวทาง export และสำรองข้อมูล เพื่อให้ร้านไม่ถูกล็อกอยู่กับระบบ"],
   ["รองรับบาร์โค้ดไหม?", "เตรียมรองรับการค้นหาและสแกนบาร์โค้ดตามแพ็กเกจ โดยจะเขียนชัดเจนในหน้าราคา"],
   ["ใช้กับหลายสาขาได้ไหม?", "v1 โฟกัสหนึ่งร้านและหนึ่งสาขาหลักก่อน แต่โครงสร้างระบบเตรียมรองรับสาขาในระยะถัดไป"]
+];
+
+export type LandingPricingPlan = {
+  name: string;
+  code: string;
+  desc: string;
+  price: string;
+  highlights: string[];
+  details: string[];
+  bestFor: string;
+  cta: string;
+  variant: "primary" | "secondary";
+};
+
+export const landingPricingPlans: LandingPricingPlan[] = [
+  {
+    name: "Starter",
+    code: "starter",
+    desc: "ร้านเล็กที่เริ่มใช้จริง",
+    price: "฿399/เดือน",
+    highlights: ["สินค้า 200 รายการ", "ผู้ใช้ 2 คน", "1 สาขา / 1 คลัง"],
+    details: [
+      "เพิ่ม/แก้ไขสินค้า, SKU, Barcode, หมวดหมู่",
+      "รับสินค้าเข้า",
+      "ปรับสต็อก",
+      "ขายหน้าร้าน / POS",
+      "ดูประวัติขาย",
+      "Dashboard และรายงานพื้นฐาน",
+      "รายงานสต็อก / สินค้าใกล้หมด",
+      "ใช้ Stock Count ได้"
+    ],
+    bestFor: "เหมาะกับร้านเดียวที่ต้องการเริ่มจัดระบบสต็อก",
+    cta: "เลือก Starter",
+    variant: "secondary"
+  },
+  {
+    name: "Professional",
+    code: "professional",
+    desc: "ร้านเดียวที่บริหารจริงจังขึ้น",
+    price: "฿899/เดือน",
+    highlights: ["สินค้า 1,500 รายการ", "ผู้ใช้ 6 คน", "1 สาขา / 2 คลัง"],
+    details: [
+      "ทุกอย่างใน Starter",
+      "รายงานยอดขายเต็มขึ้น",
+      "Profit & Loss",
+      "Approval Workflow",
+      "Audit Log",
+      "Export ข้อมูลขั้นสูง"
+    ],
+    bestFor: "เหมาะกับร้านที่มีทีมงานและต้องการควบคุมงานหลังบ้านจริงจัง",
+    cta: "เลือก Professional",
+    variant: "primary"
+  },
+  {
+    name: "Multi-Branch",
+    code: "multi_branch",
+    desc: "ร้านที่เริ่มขยายหลายสาขา",
+    price: "฿1,790/เดือน",
+    highlights: ["สินค้า 3,000 รายการ", "ผู้ใช้ 12 คน", "2 สาขา / 4 คลัง"],
+    details: [
+      "ทุกอย่างใน Professional",
+      "รองรับ Multi-Branch",
+      "โอนสินค้าระหว่างสาขา / คลัง",
+      "รายงานแยกตามสาขา",
+      "Approval Workflow",
+      "Audit Log",
+      "Profit & Loss",
+      "Export ข้อมูลขั้นสูง"
+    ],
+    bestFor: "เหมาะกับร้านที่มีมากกว่า 1 จุดขาย หรือเริ่มแยกคลัง/สาขาชัดเจน",
+    cta: "เลือก Multi-Branch",
+    variant: "secondary"
+  }
 ];
 
 function Link({ to, ...props }: ComponentProps<typeof RouterLink>) {
@@ -87,6 +161,15 @@ export function LandingPage() {
 }
 
 function HeroSection() {
+  const navigate = useNavigate();
+  const setSession = useAuth((state) => state.setSession);
+
+  function startDemo() {
+    const session = startLocalDemo();
+    setSession(session);
+    navigate("/app/dashboard");
+  }
+
   return (
     <section className="mx-auto grid max-w-7xl gap-10 px-5 py-16 lg:grid-cols-[0.9fr_1fr] lg:items-center">
       <div>
@@ -101,8 +184,9 @@ function HeroSection() {
           <Link to="/register">
             <Button icon={<ArrowRight size={18} />}>เริ่มใช้งานฟรี</Button>
           </Link>
-          <a href="#demo">
-            <Button variant="secondary">ดูตัวอย่างระบบ</Button>
+          <Button type="button" variant="secondary" onClick={startDemo}>ลองเดโมทันที</Button>
+          <a href="#demo" className="inline-flex">
+            <Button variant="ghost">ดูตัวอย่างระบบ</Button>
           </a>
         </div>
         <div className="mt-8 grid gap-3 text-sm text-stone-600 sm:grid-cols-3">
@@ -494,37 +578,49 @@ function TrustSection() {
 }
 
 function PricingSection() {
-  const plans: Array<[string, string, string[], string, "primary" | "secondary"]> = [
-    ["Free", "สำหรับทดลองใช้", ["เริ่มต้นฟรี", "รายงานพื้นฐาน", "เหมาะกับร้านเริ่มต้น"], "เริ่มใช้ฟรี", "secondary"],
-    ["Pro", "สำหรับบัญชีที่ใช้งานจริง", ["สินค้าและพนักงานมากขึ้น", "บาร์โค้ดตามแพ็กเกจ", "รายงานยอดขาย"], "เลือกแพ็กเกจ Pro", "primary"],
-    ["Premium", "สำหรับบัญชีที่ต้องการหลายฟีเจอร์หรือหลายสาขา", ["หลายสาขา", "รายงานขั้นสูง", "สิทธิ์พนักงานละเอียด"], "คุยแพ็กเกจ Premium", "secondary"]
-  ];
-
   return (
     <section id="pricing" className="mx-auto max-w-7xl px-5 py-14">
       <SectionHeading
         eyebrow="Pricing"
-        title="เริ่มใช้ฟรี อัปเกรดเมื่อบัญชีพร้อม"
-        text="แพ็กเกจเป็นสิทธิ์ที่ติดกับบัญชี รายละเอียดเต็มอยู่ที่หน้าราคา"
+        title="เลือกแพ็กเกจตามขนาดร้าน"
+        text="ทุกแพ็กเกจเป็นบัญชีชำระเงินสำหรับใช้งานจริง เลือกตามจำนวนสินค้า ทีมงาน และจำนวนสาขาที่ร้านใช้จริง"
       />
-      <div className="mt-8 grid gap-4 md:grid-cols-3">
-        {plans.map(([name, desc, items, cta, variant]) => (
-          <Card key={name} className={`flex flex-col ${name === "Pro" ? "border-leaf" : ""}`}>
+      <div className="mt-8 grid gap-4 lg:grid-cols-3">
+        {landingPricingPlans.map((plan) => (
+          <Card key={plan.name} className={`flex flex-col ${plan.name === "Professional" ? "border-leaf" : ""}`}>
             <div>
-              <h3 className="text-2xl font-black">{name}</h3>
-              <p className="mt-1 text-sm text-stone-600">{desc}</p>
-              <ul className="mt-5 space-y-2 text-sm text-stone-700">
-                {items.map((item) => (
-                  <li key={item} className="flex items-center gap-2">
-                    <CheckCircle2 size={16} className="text-leaf" />
+              <h3 className="text-2xl font-black">{plan.name}</h3>
+              <p className="mt-1 text-sm font-semibold text-stone-600">{plan.desc}</p>
+              <p className="mt-5 text-xl font-black text-ink">{plan.price}</p>
+
+              <ul className="mt-4 grid gap-2 text-sm font-bold text-stone-700">
+                {plan.highlights.map((item) => (
+                  <li key={item} className="flex items-center gap-2 rounded-md bg-stone-50 px-3 py-2">
+                    <CheckCircle2 size={16} className="shrink-0 text-leaf" />
                     {item}
                   </li>
                 ))}
               </ul>
+
+              <div className="mt-5 border-t border-stone-100 pt-4">
+                <p className="text-xs font-black uppercase tracking-[0.16em] text-moss">รวมฟีเจอร์หลัก</p>
+                <ul className="mt-3 space-y-2 text-sm leading-6 text-stone-700">
+                  {plan.details.map((item) => (
+                    <li key={item} className="flex gap-2">
+                      <CheckCircle2 size={15} className="mt-1 shrink-0 text-leaf" />
+                      <span>{item}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <p className="mt-5 rounded-md bg-mint/30 px-3 py-2 text-sm font-semibold leading-6 text-stone-700">
+                {plan.bestFor}
+              </p>
             </div>
-            <Link to={name === "Free" ? "/register" : `/checkout?plan=${name.toLowerCase()}`} className="mt-6 block">
-              <Button variant={variant} className="w-full" icon={name === "Pro" ? <ArrowRight size={16} /> : undefined}>
-                {cta}
+            <Link to={`/checkout?plan=${plan.code}`} className="mt-6 block">
+              <Button variant={plan.variant} className="w-full" icon={plan.name === "Professional" ? <ArrowRight size={16} /> : undefined}>
+                {plan.cta}
               </Button>
             </Link>
           </Card>

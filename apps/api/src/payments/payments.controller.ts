@@ -3,7 +3,8 @@ import { ConfigService } from "@nestjs/config";
 import { createHmac, timingSafeEqual } from "crypto";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser, type CurrentUser as CurrentUserType } from "../common/current-user.decorator";
-import { CheckoutPaymentDto, PaymentWebhookDto } from "../common/dto";
+import { CheckoutPaymentDto, ConfirmCheckoutDto, PaymentWebhookDto } from "../common/dto";
+import { PermissionGuard } from "../common/roles.guard";
 import { ZentoryService } from "../zentory.service";
 
 @Controller("payments")
@@ -19,14 +20,20 @@ export class PaymentsController {
     return this.service.createAccountPaymentRequest(user, dto);
   }
 
-  @Post("portal")
+  @Post("checkout/confirm")
   @UseGuards(AuthGuard)
+  confirmCheckout(@CurrentUser() user: CurrentUserType, @Body() dto: ConfirmCheckoutDto) {
+    return this.service.confirmStripeCheckoutSession(user, dto);
+  }
+
+  @Post("portal")
+  @UseGuards(AuthGuard, PermissionGuard("subscription.manage"))
   portal(@CurrentUser() user: CurrentUserType) {
     return this.service.createBillingPortalSession(user);
   }
 
   @Post("subscription/cancel-at-period-end")
-  @UseGuards(AuthGuard)
+  @UseGuards(AuthGuard, PermissionGuard("subscription.manage"))
   cancelAtPeriodEnd(@CurrentUser() user: CurrentUserType) {
     return this.service.cancelStripeSubscriptionAtPeriodEnd(user);
   }

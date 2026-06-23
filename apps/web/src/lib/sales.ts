@@ -17,6 +17,8 @@ export type SalesQueryInput = {
   search?: string;
   dateFilter?: SalesDateFilter;
   branchId?: string;
+  warehouseId?: string;
+  allTime?: boolean;
 };
 
 function money(value: string | undefined) {
@@ -62,6 +64,8 @@ export function buildSalesQuery(input: SalesQueryInput) {
   const range = getSalesDateRange(input.dateFilter ?? "all");
   if (range.dateFrom) params.set("dateFrom", range.dateFrom);
   if (range.dateTo) params.set("dateTo", range.dateTo);
+  if (input.allTime) params.set("allTime", "1");
   if (input.branchId) params.set("branchId", input.branchId);
+  if (input.warehouseId) params.set("warehouseId", input.warehouseId);
   return params.toString();
 }

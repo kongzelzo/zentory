@@ -11,9 +11,9 @@ export function AdminCustomerDetailPage() {
       <Back to="/admin/customers" label="กลับร้านค้าทั้งหมด" />
       <Header title="รายละเอียดร้านค้า" subtitle={`Tenant ID: ${id}`} icon={Eye} />
       <div className="grid gap-4 md:grid-cols-4">
-        <Card><p className="text-sm text-stone-500">แพ็กเกจ</p><p className="text-2xl font-black">Pro</p></Card>
-        <Card><p className="text-sm text-stone-500">ผู้ใช้</p><p className="text-2xl font-black">5 / 5</p></Card>
-        <Card><p className="text-sm text-stone-500">สินค้า</p><p className="text-2xl font-black">842 / 1,000</p></Card>
+        <Card><p className="text-sm text-stone-500">แพ็กเกจ</p><p className="text-2xl font-black">Professional</p></Card>
+        <Card><p className="text-sm text-stone-500">ผู้ใช้</p><p className="text-2xl font-black">5 / 6</p></Card>
+        <Card><p className="text-sm text-stone-500">สินค้า</p><p className="text-2xl font-black">842 / 1,500</p></Card>
         <Card><p className="text-sm text-stone-500">สถานะ</p><p className="text-2xl font-black text-leaf">Active</p></Card>
       </div>
       <div className="grid gap-4 xl:grid-cols-[1fr_360px]">
@@ -31,7 +31,7 @@ export function AdminCustomerDetailPage() {
           <h2 className="text-xl font-black">Admin Actions</h2>
           <div className="mt-4 space-y-2">
             <Button className="w-full" variant="secondary">ต่ออายุ 30 วัน</Button>
-            <Button className="w-full" variant="secondary">เปลี่ยนเป็น Pro</Button>
+            <Button className="w-full" variant="secondary">เปลี่ยนเป็น Professional</Button>
             <Link to="/admin/impersonation"><Button className="w-full">เข้าใช้งานแทนร้าน</Button></Link>
             <Button className="w-full" variant="danger">ระงับร้าน</Button>
           </div>
@@ -39,7 +39,7 @@ export function AdminCustomerDetailPage() {
       </div>
       <Card>
         <h2 className="text-xl font-black">Usage Timeline</h2>
-        <Timeline items={["สมัครใช้งาน", "อัปเกรดเป็น Pro", "เพิ่มผู้ใช้คนที่ 5", "รอชำระรอบถัดไป"]} />
+        <Timeline items={["สมัครใช้งาน", "อัปเกรดเป็น Professional", "เพิ่มผู้ใช้คนที่ 5", "รอชำระรอบถัดไป"]} />
       </Card>
     </div>
   );
@@ -133,8 +133,8 @@ export function AdminPaymentApprovalPage() {
           <h2 className="text-xl font-black">Invoice INV-2026-00001</h2>
           <div className="mt-4 grid gap-3 md:grid-cols-2">
             <p><b>ร้าน:</b> Coffee Lab</p>
-            <p><b>แพ็กเกจ:</b> Pro</p>
-            <p><b>ยอด:</b> ฿590</p>
+            <p><b>แพ็กเกจ:</b> Professional</p>
+            <p><b>ยอด:</b> ฿899</p>
             <p><b>สถานะ:</b> รอตรวจ</p>
           </div>
           <div className="mt-5 rounded-lg border border-dashed border-stone-300 p-8 text-center">
@@ -176,8 +176,8 @@ export function AdminAnnouncementComposerPage() {
             defaultValue="all"
             options={[
               { value: "all", label: "ทุกร้าน" },
-              { value: "pro", label: "เฉพาะ Pro" },
-              { value: "free", label: "เฉพาะ Free" }
+              { value: "professional", label: "เฉพาะ Professional" },
+              { value: "starter", label: "เฉพาะ Starter" }
             ]}
           />
           <input className="field" type="datetime-local" />
@@ -200,10 +200,10 @@ export function AdminPlanEditorPage() {
       <Header title="แก้ไขแพ็กเกจ" subtitle={`Plan: ${id}`} icon={FileText} />
       <Card>
         <div className="grid gap-4 md:grid-cols-2">
-          <input className="field" defaultValue={id === "pro" ? "Pro" : "Free"} />
-          <input className="field" type="number" defaultValue={id === "pro" ? 590 : 0} />
-          <input className="field" type="number" defaultValue={id === "pro" ? 1000 : 30} />
-          <input className="field" type="number" defaultValue={id === "pro" ? 5 : 1} />
+          <input className="field" defaultValue={id === "multi-branch" ? "Multi-Branch" : id === "professional" ? "Professional" : "Starter"} />
+          <input className="field" type="number" defaultValue={id === "multi-branch" ? 1790 : id === "professional" ? 899 : 399} />
+          <input className="field" type="number" defaultValue={id === "multi-branch" ? 3000 : id === "professional" ? 1500 : 200} />
+          <input className="field" type="number" defaultValue={id === "multi-branch" ? 12 : id === "professional" ? 6 : 2} />
           <textarea className="field md:col-span-2" rows={5} defaultValue="POS, รายงานพื้นฐาน, แจ้งเตือนสินค้าใกล้หมด" />
         </div>
         <Button className="mt-4">บันทึกแพ็กเกจ</Button>

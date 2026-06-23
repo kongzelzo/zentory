@@ -4,6 +4,7 @@ import { NestFactory } from "@nestjs/core";
 import { NestExpressApplication } from "@nestjs/platform-express";
 import { join } from "path";
 import { AppModule } from "./app.module";
+import { validateProductionEnv } from "./common/env";
 
 function getAllowedOrigins(config: ConfigService) {
   return (config.get<string>("WEB_ORIGIN") ?? config.get<string>("WEB_APP_URL") ?? "http://localhost:5173")
@@ -17,6 +18,7 @@ function isLocalDevOrigin(origin: string) {
 }
 
 async function bootstrap() {
+  validateProductionEnv();
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
   const config = app.get(ConfigService);
   const allowedOrigins = getAllowedOrigins(config);

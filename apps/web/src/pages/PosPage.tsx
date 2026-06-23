@@ -10,7 +10,7 @@ import { Dropdown } from "../components/Dropdown";
 import { api } from "../lib/api";
 import { branchScopedPath } from "../lib/branch-scope";
 import { baht, number } from "../lib/format";
-import { canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getPreferredWarehouseId, getSaleTotals, sanitizeCartQuantity, stockOf } from "../lib/pos";
+import { canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getPreferredWarehouseId, getSaleTotals, sanitizeCartQuantity, sortPosProductsForSale, stockOf, type DiscountMode } from "../lib/pos";
 import { savePosPaymentDraft } from "../lib/pos-payment-draft";
 import { getProductDisplayName, getProductImageUrl } from "../lib/products";
 import { loadBranchPosSettings } from "../lib/pos-settings";
@@ -59,7 +59,8 @@ export function PosPage() {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("ALL");
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [discount, setDiscount] = useState(0);
+  const [discountValue, setDiscountValue] = useState(0);
+  const [discountMode, setDiscountMode] = useState<DiscountMode>("PERCENT");
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("CASH");
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
@@ -81,11 +82,11 @@ export function PosPage() {
   });
   const filtered = useMemo(() => {
     const value = search.trim().toLowerCase();
-    return (products.data ?? [])
+    const rows = (products.data ?? [])
       .filter((product) => categoryFilter === "ALL" || (categoryFilter === "UNCATEGORIZED" ? !product.category?.name : product.category?.name === categoryFilter))
-      .filter((product) => !value || [product.name, product.variantColor, product.variantSize, product.sku, product.barcode].some((field) => field?.toLowerCase().includes(value)))
-      .slice(0, 20);
-  }, [categoryFilter, products.data, search]);
+      .filter((product) => !value || [product.name, product.variantColor, product.variantSize, product.sku, product.barcode].some((field) => field?.toLowerCase().includes(value)));
+    return sortPosProductsForSale(rows, warehouseId, search).slice(0, 20);
+  }, [categoryFilter, products.data, search, warehouseId]);
   const categoryOptions = useMemo(() => {
     const activeCategoryNames = new Set((products.data ?? []).map((product) => product.category?.name).filter(Boolean) as string[]);
     const rows = (categories.data ?? []).filter((category) => activeCategoryNames.has(category.name));
@@ -103,7 +104,7 @@ export function PosPage() {
   const branchPosSettings = useMemo(() => loadBranchPosSettings(branchId), [branchId]);
   const locationIssue = !branchId || !warehouseId;
   const checkoutIssue = getCheckoutIssue(cart, warehouseId);
-  const { subtotal, total } = getSaleTotals(cart, discount);
+  const { subtotal, discount, total } = getSaleTotals(cart, discountValue, discountMode);
 
   useEffect(() => {
     if (!categoryOptions.some((category) => category.value === categoryFilter)) setCategoryFilter("ALL");
@@ -350,7 +351,39 @@ export function PosPage() {
 
           <label className="mt-4 block">
             <span className="text-sm font-semibold">ส่วนลด</span>
-            <input className="field mt-1" type="number" min={0} value={discount} onChange={(event) => setDiscount(Math.max(0, Number(event.target.value) || 0))} />
+            <div className="mt-1 grid grid-cols-[1fr_auto] gap-2">
+              <input
+                className="field"
+                type="number"
+                min={0}
+                max={discountMode === "PERCENT" ? 100 : undefined}
+                step={discountMode === "PERCENT" ? 1 : 0.01}
+                value={discountValue}
+                onChange={(event) => {
+                  const next = Math.max(0, Number(event.target.value) || 0);
+                  setDiscountValue(discountMode === "PERCENT" ? Math.min(next, 100) : next);
+                }}
+              />
+              <div className="grid grid-cols-2 rounded-md border border-stone-200 bg-white p-1">
+                <button
+                  type="button"
+                  className={`h-9 min-w-11 rounded px-3 text-sm font-black ${discountMode === "PERCENT" ? "bg-leaf text-white" : "text-stone-600 hover:bg-stone-50"}`}
+                  onClick={() => setDiscountMode("PERCENT")}
+                  aria-pressed={discountMode === "PERCENT"}
+                >
+                  %
+                </button>
+                <button
+                  type="button"
+                  className={`h-9 min-w-11 rounded px-3 text-sm font-black ${discountMode === "AMOUNT" ? "bg-leaf text-white" : "text-stone-600 hover:bg-stone-50"}`}
+                  onClick={() => setDiscountMode("AMOUNT")}
+                  aria-pressed={discountMode === "AMOUNT"}
+                >
+                  ฿
+                </button>
+              </div>
+            </div>
+            {discountMode === "PERCENT" && discountValue > 0 ? <span className="mt-1 block text-xs font-semibold text-stone-500">คิดเป็นส่วนลด {baht(discount)}</span> : null}
           </label>
 
           <div className="mt-4 grid grid-cols-2 gap-2">
@@ -367,6 +400,7 @@ export function PosPage() {
 
           <div className="mt-5 border-t border-stone-200 pt-4">
             <p className="flex justify-between"><span>รวม</span><b>{baht(subtotal)}</b></p>
+            {discount > 0 ? <p className="flex justify-between"><span>ส่วนลด</span><b>{baht(discount)}</b></p> : null}
             <p className="flex justify-between text-2xl font-black"><span>สุทธิ</span><span>{baht(total)}</span></p>
           </div>
           {message ? <p className="mt-3 rounded-md bg-stone-100 p-3 text-sm">{message}</p> : null}

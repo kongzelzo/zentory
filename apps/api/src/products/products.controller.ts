@@ -2,7 +2,7 @@ import { Body, Controller, Delete, Get, Param, Patch, Post, Query, UploadedFile,
 import { FileInterceptor } from "@nestjs/platform-express";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
-import { ProductDto, ProductVariantsDto } from "../common/dto";
+import { ProductBulkCategoryDto, ProductDto, ProductVariantsDto } from "../common/dto";
 import { PermissionGuard } from "../common/roles.guard";
 import { ZentoryService } from "../zentory.service";
 import { MAX_PRODUCT_IMAGE_BYTES, ProductImageFile } from "./product-image-storage.service";
@@ -28,6 +28,12 @@ export class ProductsController {
   @UseGuards(PermissionGuard("products.create"))
   createVariants(@CurrentUser() user: CurrentUser, @Body() dto: ProductVariantsDto) {
     return this.service.createProductVariants(user, dto);
+  }
+
+  @Patch("bulk/category")
+  @UseGuards(PermissionGuard("products.update"))
+  updateBulkCategory(@CurrentUser() user: CurrentUser, @Body() dto: ProductBulkCategoryDto) {
+    return this.service.updateProductsCategory(user, dto);
   }
 
   @Get(":id")

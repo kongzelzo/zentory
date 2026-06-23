@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildBranchSummaries, buildBranchTotals, filterBranchSummaries, type BranchRecord } from "./branches";
+import { buildBranchSummaries, buildBranchTotals, canCreateWarehouseForPlan, filterBranchSummaries, type BranchRecord } from "./branches";
 
 describe("branch inventory summaries", () => {
   const branches: BranchRecord[] = [
@@ -42,5 +42,21 @@ describe("branch inventory summaries", () => {
     expect(filterBranchSummaries(summaries, { search: "หน้าร้าน", status: "inactive" }).map((branch) => branch.id)).toEqual(["store"]);
     expect(filterBranchSummaries(summaries, { search: "", status: "hasLowStock" }).map((branch) => branch.id)).toEqual(["main"]);
     expect(filterBranchSummaries(summaries, { search: "", status: "hasOutOfStock" }).map((branch) => branch.id)).toEqual(["main"]);
+  });
+});
+
+describe("warehouse plan limits", () => {
+  it("blocks opening the create warehouse form when the loaded warehouse count reaches the plan limit", () => {
+    expect(canCreateWarehouseForPlan({ warehouseCount: 2, warehouseLimit: 2 })).toBe(false);
+  });
+
+  it("falls back to allowed warehouse ids when the numeric plan limit is unavailable", () => {
+    expect(canCreateWarehouseForPlan({ warehouseCount: 2, allowedWarehouseIds: ["main", "store"] })).toBe(false);
+  });
+
+  it("allows opening the create warehouse form when plan access is missing or current warehouses are below the allowance", () => {
+    expect(canCreateWarehouseForPlan({ warehouseCount: 2 })).toBe(true);
+    expect(canCreateWarehouseForPlan({ warehouseCount: 1, warehouseLimit: 2 })).toBe(true);
+    expect(canCreateWarehouseForPlan({ warehouseCount: 1, allowedWarehouseIds: ["main", "store"] })).toBe(true);
   });
 });

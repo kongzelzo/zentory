@@ -19,8 +19,8 @@ describe("billing mode labels", () => {
     expect(billingModeLabel("STRIPE_SUBSCRIPTION", true)).toContain("ใช้ได้ถึงวันจบรอบ");
   });
 
-  it("labels PromptPay one-time access and Free accounts", () => {
+  it("labels PromptPay one-time access and system-opened accounts", () => {
     expect(billingModeLabel("PROMPTPAY_ONE_TIME")).toBe("PromptPay แบบจ่ายครั้งเดียว");
-    expect(billingModeLabel("FREE")).toBe("Free");
+    expect(billingModeLabel("FREE")).toBe("เปิดใช้งานโดยระบบ");
   });
 });

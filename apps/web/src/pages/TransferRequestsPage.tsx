@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Check, Clock3, Eye, PackageCheck, X } from "lucide-react";
+import { ArrowLeft, Check, Eye, PackageCheck, X } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../components/Button";
@@ -48,10 +48,6 @@ function canManageBranch(session: Session, warehouse?: WarehouseOption) {
   return Boolean(branchId && session?.business?.assignedBranchIds?.includes(branchId));
 }
 
-function canManageSource(session: Session, warehouse?: WarehouseOption) {
-  return canManageBranch(session, warehouse);
-}
-
 function refreshTransferQueries(queryClient: ReturnType<typeof useQueryClient>) {
   queryClient.invalidateQueries({ queryKey: ["transfers"] });
   queryClient.invalidateQueries({ queryKey: ["notifications"] });
@@ -68,12 +64,6 @@ export function TransferRequestsPage() {
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
   const [detailTransfer, setDetailTransfer] = useState<TransferRequest | null>(null);
   const [message, setMessage] = useState("");
-  const requests = useQuery({
-    queryKey: ["transfers", "requests-page", workingBranchId],
-    queryFn: () => api<TransferRequest[]>(branchScopedPath("/inventory/transfers?status=REQUESTED&side=source", workingBranchId)),
-    refetchInterval: 5000,
-    refetchOnWindowFocus: true
-  });
   const incoming = useQuery({
     queryKey: ["transfers", "requests-page", "in-transit", workingBranchId],
     queryFn: () => api<TransferRequest[]>(branchScopedPath("/inventory/transfers?status=IN_TRANSIT&side=destination", workingBranchId)),
@@ -81,20 +71,6 @@ export function TransferRequestsPage() {
     refetchOnWindowFocus: true
   });
 
-  const approveMutation = useMutation({
-    mutationFn: (id: string) => patch<TransferRequest>(`/inventory/transfers/${id}/source-approve`, {}),
-    onSuccess: () => {
-      setMessage("อนุมัติส่งออกแล้ว สินค้าอยู่ระหว่างทาง");
-      refreshTransferQueries(queryClient);
-    }
-  });
-  const rejectMutation = useMutation({
-    mutationFn: (id: string) => patch<TransferRequest>(`/inventory/transfers/${id}/source-reject`, {}),
-    onSuccess: () => {
-      setMessage("ปฏิเสธคำขอสินค้าแล้ว");
-      refreshTransferQueries(queryClient);
-    }
-  });
   const receiveMutation = useMutation({
     mutationFn: (id: string) => patch<TransferRequest>(`/inventory/transfers/${id}/receive`, {}),
     onSuccess: () => {
@@ -110,11 +86,7 @@ export function TransferRequestsPage() {
     }
   });
 
-  const error = requests.error?.message ?? incoming.error?.message ?? approveMutation.error?.message ?? rejectMutation.error?.message ?? receiveMutation.error?.message ?? cancelMutation.error?.message;
-  const transferRequests = useMemo(
-    () => (requests.data ?? []).filter((transfer) => !workingBranchId || branchIdOf(transfer.sourceWarehouse) === workingBranchId),
-    [requests.data, workingBranchId]
-  );
+  const error = incoming.error?.message ?? receiveMutation.error?.message ?? cancelMutation.error?.message;
   const incomingTransfers = useMemo(
     () => (incoming.data ?? []).filter((transfer) => !workingBranchId || branchIdOf(transfer.destinationWarehouse) === workingBranchId),
     [incoming.data, workingBranchId]
@@ -125,18 +97,17 @@ export function TransferRequestsPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-black text-ink">คำขอ/รอรับของโอน</h1>
-          <p className="mt-0.5 max-w-2xl text-sm text-stone-600">ตรวจคำขอจากสาขาปลายทาง อนุมัติส่งออก และรับสินค้าเข้าคลังปลายทางในหน้าเดียว</p>
+          <h1 className="text-2xl font-black text-ink">รอยืนยันรับของ</h1>
+          <p className="mt-0.5 max-w-2xl text-sm text-stone-600">เอกสารที่ต้นทางส่งออกแล้ว และรอปลายทางยืนยันรับเข้าคลัง</p>
         </div>
         <Link to="/app/transfers">
           <Button className="h-9 px-3" variant="secondary" icon={<ArrowLeft size={17} />}>ย้อนกลับ</Button>
         </Link>
       </div>
 
-      <div className="grid gap-3 md:grid-cols-3">
-        <Metric icon={<Clock3 size={18} />} label="รออนุมัติ" value={`${number(transferRequests.length)} ใบ`} />
-        <Metric icon={<PackageCheck size={18} />} label="รอยืนยันรับสินค้า" value={`${number(incomingTransfers.length)} ใบ`} />
-        <Metric icon={<Check size={18} />} label="จัดการได้" value={`${number(transferRequests.filter((transfer) => canManageBranch(session, transfer.sourceWarehouse)).length + incomingTransfers.filter((transfer) => canManageBranch(session, transfer.destinationWarehouse)).length)} ใบ`} />
+      <div className="grid gap-3 md:grid-cols-2">
+        <Metric icon={<PackageCheck size={18} />} label="รอยืนยันรับของ" value={`${number(incomingTransfers.length)} ใบ`} />
+        <Metric icon={<Check size={18} />} label="จัดการได้" value={`${number(incomingTransfers.filter((transfer) => canManageBranch(session, transfer.destinationWarehouse)).length)} ใบ`} />
       </div>
 
       {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm font-semibold text-red-700">{error}</p> : null}
@@ -145,78 +116,7 @@ export function TransferRequestsPage() {
       <Card className="p-0">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 p-4">
           <div>
-            <h2 className="text-lg font-black text-ink">รายการคำขอที่รอต้นทาง</h2>
-            <p className="mt-0.5 text-sm text-stone-500">แสดงเฉพาะเอกสารสถานะรออนุมัติต้นทางตามสาขาที่คุณมีสิทธิ์เห็น</p>
-          </div>
-          <Button className="h-9 px-3" variant="ghost" onClick={() => requests.refetch()} disabled={requests.isFetching}>รีเฟรช</Button>
-        </div>
-        <div className="table-shell border-0 shadow-none">
-          <table className="w-full min-w-[980px] text-left text-sm">
-            <thead className="bg-stone-50 text-stone-500">
-              <tr>
-                <th className="p-3">เลขเอกสาร</th>
-                <th className="p-3">สถานะ</th>
-                <th className="p-3">ต้นทาง</th>
-                <th className="p-3">ปลายทาง</th>
-                <th className="p-3">สินค้า</th>
-                <th className="p-3">ผู้ขอ</th>
-                <th className="p-3">วันที่</th>
-                <th className="p-3 text-right">จัดการ</th>
-              </tr>
-            </thead>
-            <tbody>
-              {transferRequests.map((transfer) => {
-                const canApprove = canManageSource(session, transfer.sourceWarehouse);
-                return (
-                  <tr key={transfer.id} className="border-t border-stone-100 align-top">
-                    <td className="p-3 font-black text-ink">{transfer.documentNo}</td>
-                    <td className="p-3">{statusBadge(transfer.status)}</td>
-                    <td className="p-3 text-stone-600">{warehouseLabel(transfer.sourceWarehouse)}</td>
-                    <td className="p-3 text-stone-600">{warehouseLabel(transfer.destinationWarehouse)}</td>
-                    <td className="p-3 text-stone-600">
-                      <div className="space-y-1">
-                        {transfer.items.map((item) => (
-                          <p key={item.id} className="font-semibold text-stone-700">
-                            {item.product.name} <span className="text-stone-400">SKU {item.product.sku}</span> x {number(item.quantity)} {item.product.unit ?? ""}
-                          </p>
-                        ))}
-                        {transfer.note ? <p className="text-xs font-semibold text-stone-500">หมายเหตุ: {transfer.note}</p> : null}
-                      </div>
-                    </td>
-                    <td className="p-3 text-stone-600">{transfer.requestedBy?.name ?? transfer.createdBy?.name ?? "-"}</td>
-                    <td className="p-3 text-stone-500">{thaiDate(transfer.createdAt)}</td>
-                    <td className="p-3">
-                      {canApprove ? (
-                        <div className="flex flex-wrap justify-end gap-2">
-                          <Button className="h-9 px-3" type="button" variant="secondary" icon={<Eye size={16} />} onClick={() => setDetailTransfer(transfer)}>รายละเอียด</Button>
-                          <Button className="h-9 px-3" icon={<Check size={16} />} disabled={approveMutation.isPending} onClick={() => approveMutation.mutate(transfer.id)}>อนุมัติส่งออก</Button>
-                          <Button className="h-9 px-3" variant="danger" icon={<X size={16} />} disabled={rejectMutation.isPending} onClick={() => rejectMutation.mutate(transfer.id)}>ปฏิเสธ</Button>
-                        </div>
-                      ) : (
-                        <div className="flex flex-wrap items-center justify-end gap-2">
-                          <Button className="h-9 px-3" type="button" variant="secondary" icon={<Eye size={16} />} onClick={() => setDetailTransfer(transfer)}>รายละเอียด</Button>
-                          <span className="text-right text-xs font-semibold text-stone-400">รอผู้จัดการสาขาต้นทาง</span>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-              {!requests.isLoading && transferRequests.length === 0 ? (
-                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-stone-500">ยังไม่มีคำขอโอนสินค้าที่รออนุมัติ</td></tr>
-              ) : null}
-              {requests.isLoading ? (
-                <tr><td colSpan={8} className="p-8 text-center text-sm font-semibold text-stone-500">กำลังโหลดคำขอโอนสินค้า...</td></tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-
-      <Card className="p-0">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-stone-200 p-4">
-          <div>
-            <h2 className="text-lg font-black text-ink">รอยืนยันรับสินค้า</h2>
+            <h2 className="text-lg font-black text-ink">รอยืนยันรับของ</h2>
             <p className="mt-0.5 text-sm text-stone-500">เอกสารที่ต้นทางส่งออกแล้ว และรอปลายทางยืนยันรับเข้าคลัง</p>
           </div>
           <Button className="h-9 px-3" variant="ghost" onClick={() => incoming.refetch()} disabled={incoming.isFetching}>รีเฟรช</Button>
@@ -267,7 +167,7 @@ export function TransferRequestsPage() {
                 <tr><td colSpan={7} className="p-8 text-center text-sm font-semibold text-stone-500">ยังไม่มีสินค้าโอนที่รอรับ</td></tr>
               ) : null}
               {incoming.isLoading ? (
-                <tr><td colSpan={7} className="p-8 text-center text-sm font-semibold text-stone-500">กำลังโหลดรายการรอยืนยันรับสินค้า...</td></tr>
+                <tr><td colSpan={7} className="p-8 text-center text-sm font-semibold text-stone-500">กำลังโหลดรายการรอยืนยันรับของ...</td></tr>
               ) : null}
             </tbody>
           </table>
@@ -279,7 +179,7 @@ export function TransferRequestsPage() {
           <div className="max-h-[90vh] w-full max-w-2xl overflow-auto rounded-md bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-4 border-b border-stone-200 p-5">
               <div>
-                <p className="text-xs font-black uppercase text-teal-700">{detailTransfer.status === "IN_TRANSIT" ? "รอยืนยันรับสินค้า" : "คำขอโอนสินค้า"}</p>
+                <p className="text-xs font-black uppercase text-teal-700">รอยืนยันรับของ</p>
                 <h2 id="transfer-request-detail-title" className="mt-1 text-xl font-black text-ink">{detailTransfer.documentNo}</h2>
                 <div className="mt-2">{statusBadge(detailTransfer.status)}</div>
               </div>
@@ -315,12 +215,6 @@ export function TransferRequestsPage() {
 
               <div className="flex flex-wrap justify-end gap-2 border-t border-stone-200 pt-4">
                 <Button type="button" variant="ghost" onClick={closeDetail}>ปิด</Button>
-                {detailTransfer.status === "REQUESTED" && canManageSource(session, detailTransfer.sourceWarehouse) ? (
-                  <>
-                    <Button type="button" icon={<Check size={16} />} disabled={approveMutation.isPending} onClick={() => { approveMutation.mutate(detailTransfer.id); closeDetail(); }}>อนุมัติส่งออก</Button>
-                    <Button type="button" variant="danger" icon={<X size={16} />} disabled={rejectMutation.isPending} onClick={() => { rejectMutation.mutate(detailTransfer.id); closeDetail(); }}>ปฏิเสธ</Button>
-                  </>
-                ) : null}
                 {detailTransfer.status === "IN_TRANSIT" && canManageBranch(session, detailTransfer.destinationWarehouse) ? (
                   <Button type="button" icon={<Check size={16} />} disabled={receiveMutation.isPending} onClick={() => { receiveMutation.mutate(detailTransfer.id); closeDetail(); }}>ยืนยันรับ</Button>
                 ) : null}

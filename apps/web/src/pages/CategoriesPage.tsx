@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Edit3, ImageIcon, LockKeyhole, Package, Palette, Plus, Search, Tags, Trash2, X } from "lucide-react";
+import { CheckCircle2, ChevronDown, Edit3, ImageIcon, LockKeyhole, Package, Palette, Plus, Search, Tags, Trash2, X } from "lucide-react";
 import { Fragment, FormEvent, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
@@ -9,7 +10,7 @@ import { api, patch, post } from "../lib/api";
 import { branchScopedPath } from "../lib/branch-scope";
 import { number } from "../lib/format";
 import { hasSessionPermission } from "../lib/permissions";
-import { getProductImageUrl, stockOf as productStockOf } from "../lib/products";
+import { getProductDisplayName, getProductImageUrl, matchesProductSearch, stockOf as productStockOf, type ProductForSummary } from "../lib/products";
 import { useAuth } from "../state/auth";
 import { useWorkingBranch } from "../state/working-branch";
 
@@ -27,6 +28,9 @@ type CategoryForm = {
 };
 
 type CategorySort = "NAME_ASC" | "NAME_DESC" | "PRODUCTS_DESC" | "PRODUCTS_ASC" | "UNUSED_FIRST" | "USED_FIRST";
+type ProductPickerMode = "UNCATEGORIZED" | "ALL";
+type ProductPickerProduct = ProductForSummary;
+type RemovableCategoryProduct = Pick<ProductForSummary, "id" | "name" | "sku"> & Partial<Pick<ProductForSummary, "variantColor" | "variantSize" | "category">>;
 
 const emptyForm: CategoryForm = { name: "", color: "#2563eb" };
 const colorOptions = ["#2563eb", "#0f766e", "#dc2626", "#ca8a04", "#7c3aed", "#0891b2", "#475569", "#16a34a"];
@@ -61,6 +65,18 @@ export function CategoriesPage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [openCategoryId, setOpenCategoryId] = useState<string | null>(null);
+  const [assigningCategory, setAssigningCategory] = useState<Category | null>(null);
+  const [productPickerMode, setProductPickerMode] = useState<ProductPickerMode>("UNCATEGORIZED");
+  const [productSearch, setProductSearch] = useState("");
+  const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(() => new Set());
+  const [assignedProductIdsThisSession, setAssignedProductIdsThisSession] = useState<Set<string>>(() => new Set());
+  const [removedProductIdsThisSession, setRemovedProductIdsThisSession] = useState<Set<string>>(() => new Set());
+  const [pendingMoveProducts, setPendingMoveProducts] = useState<ProductPickerProduct[]>([]);
+  const [pendingRemoveProducts, setPendingRemoveProducts] = useState<RemovableCategoryProduct[]>([]);
+  const [pendingRemoveCategory, setPendingRemoveCategory] = useState<Category | null>(null);
+  const [successTitle, setSuccessTitle] = useState("เพิ่มสินค้าเรียบร้อย");
+  const [successMessage, setSuccessMessage] = useState("");
+  const [successHint, setSuccessHint] = useState("");
   const session = useAuth((state) => state.session);
   const workingBranchId = useWorkingBranch((state) => state.workingBranchId);
   const canViewCategories = hasSessionPermission(session, "products.read");
@@ -70,6 +86,11 @@ export function CategoriesPage() {
     queryFn: () => api<Category[]>(branchScopedPath("/categories", workingBranchId)),
     enabled: canViewCategories
   });
+  const products = useQuery({
+    queryKey: ["products", "category-picker", workingBranchId],
+    queryFn: () => api<ProductPickerProduct[]>(branchScopedPath("/products", workingBranchId)),
+    enabled: canViewCategories && Boolean(assigningCategory)
+  });
 
   useEffect(() => {
     setOpenCategoryId(null);
@@ -78,6 +99,17 @@ export function CategoriesPage() {
   useEffect(() => {
     if (!canEditCategories) resetForm();
   }, [canEditCategories]);
+
+  useEffect(() => {
+    setSelectedProductIds(new Set());
+    setAssignedProductIdsThisSession(new Set());
+    setRemovedProductIdsThisSession(new Set());
+    setPendingMoveProducts([]);
+    setPendingRemoveProducts([]);
+    setPendingRemoveCategory(null);
+    setSuccessMessage("");
+    setSuccessHint("");
+  }, [assigningCategory?.id, productPickerMode]);
 
   const filteredCategories = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -99,14 +131,40 @@ export function CategoriesPage() {
     assignedProducts: (categories.data ?? []).reduce((sum, category) => sum + productCount(category), 0),
     unusedCategories: (categories.data ?? []).filter((category) => productCount(category) === 0).length
   }), [categories.data]);
+  const productPickerRows = useMemo(() => {
+    const targetName = assigningCategory?.name;
+    return (products.data ?? [])
+      .filter((product) => product.status !== "ARCHIVED")
+      .filter((product) => productPickerMode === "ALL" || ((!product.category?.name || removedProductIdsThisSession.has(product.id)) && !assignedProductIdsThisSession.has(product.id)))
+      .filter((product) => matchesProductSearch(product, productSearch))
+      .sort((left, right) => {
+        const leftInTarget = (left.category?.name === targetName || assignedProductIdsThisSession.has(left.id)) && !removedProductIdsThisSession.has(left.id);
+        const rightInTarget = (right.category?.name === targetName || assignedProductIdsThisSession.has(right.id)) && !removedProductIdsThisSession.has(right.id);
+        if (leftInTarget !== rightInTarget) return Number(leftInTarget) - Number(rightInTarget);
+        const leftHasCategory = Boolean(left.category?.name);
+        const rightHasCategory = Boolean(right.category?.name);
+        if (leftHasCategory !== rightHasCategory) return Number(leftHasCategory) - Number(rightHasCategory);
+        return getProductDisplayName(left).localeCompare(getProductDisplayName(right), "th");
+      });
+  }, [assigningCategory?.name, assignedProductIdsThisSession, productPickerMode, productSearch, products.data, removedProductIdsThisSession]);
+  const visibleAssignableProductIds = useMemo(() => {
+    return productPickerRows
+      .filter((product) => (product.category?.name !== assigningCategory?.name || removedProductIdsThisSession.has(product.id)) && !assignedProductIdsThisSession.has(product.id))
+      .map((product) => product.id);
+  }, [assigningCategory?.name, assignedProductIdsThisSession, productPickerRows, removedProductIdsThisSession]);
+  const allVisibleAssignableSelected = visibleAssignableProductIds.length > 0 && visibleAssignableProductIds.every((id) => selectedProductIds.has(id));
 
   const saveMutation = useMutation({
     mutationFn: (payload: CategoryForm) => editingId ? patch<Category>(`/categories/${editingId}`, payload) : post<Category>("/categories", payload),
-    onSuccess: () => {
+    onSuccess: (_category, _payload, context) => {
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["products"] });
+      setSuccessTitle(context?.wasEditing ? "แก้ไขสำเร็จ" : "สร้างหมวดหมู่สำเร็จ");
+      setSuccessMessage(context?.wasEditing ? "บันทึกการแก้ไขหมวดหมู่เรียบร้อยแล้ว" : "สร้างหมวดหมู่ใหม่เรียบร้อยแล้ว");
+      setSuccessHint("");
       resetForm();
-    }
+    },
+    onMutate: () => ({ wasEditing: Boolean(editingId) })
   });
 
   const deleteMutation = useMutation({
@@ -114,6 +172,42 @@ export function CategoriesPage() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["categories"] });
       queryClient.invalidateQueries({ queryKey: ["products"] });
+    }
+  });
+  const assignProductsMutation = useMutation({
+    mutationFn: ({ productIds, categoryName }: { productIds: string[]; categoryName: string | null; sourceCategoryName?: string }) => patch<{ updatedCount: number; categoryName: string | null }>("/products/bulk/category", { productIds, categoryName }),
+    onSuccess: (result, variables) => {
+      if (variables.categoryName === null) {
+        const categoryName = variables.sourceCategoryName ?? pendingRemoveCategory?.name ?? assigningCategory?.name ?? "หมวดหมู่";
+        setAssignedProductIdsThisSession((current) => {
+          const next = new Set(current);
+          variables.productIds.forEach((id) => next.delete(id));
+          return next;
+        });
+        setRemovedProductIdsThisSession((current) => new Set([...current, ...variables.productIds]));
+        setSuccessTitle("นำสินค้าออกเรียบร้อย");
+        setSuccessMessage(`นำสินค้าออกจาก "${categoryName}" แล้ว ${number(result.updatedCount)} รายการ`);
+        setSuccessHint("สินค้าที่นำออกแล้วจะกลับไปอยู่ในรายการยังไม่จัดหมวด");
+      } else {
+        const categoryName = result.categoryName ?? assigningCategory?.name ?? "หมวดหมู่";
+        setRemovedProductIdsThisSession((current) => {
+          const next = new Set(current);
+          variables.productIds.forEach((id) => next.delete(id));
+          return next;
+        });
+        setAssignedProductIdsThisSession((current) => new Set([...current, ...variables.productIds]));
+        setSuccessTitle("เพิ่มสินค้าเรียบร้อย");
+        setSuccessMessage(`เพิ่มสินค้าเข้า "${categoryName}" แล้ว ${number(result.updatedCount)} รายการ`);
+        setSuccessHint("รายการที่เพิ่มแล้วจะไม่แสดงในแท็บยังไม่จัดหมวด และจะถูกทำเครื่องหมายว่าอยู่ในหมวดนี้ในแท็บสินค้าทั้งหมด");
+      }
+      setSelectedProductIds(new Set());
+      setPendingMoveProducts([]);
+      setPendingRemoveProducts([]);
+      setPendingRemoveCategory(null);
+      queryClient.invalidateQueries({ queryKey: ["categories"] });
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["stock-report"] });
+      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
     }
   });
 
@@ -149,7 +243,83 @@ export function CategoriesPage() {
     deleteMutation.mutate(category.id);
   }
 
-  const errorMessage = saveMutation.error?.message ?? deleteMutation.error?.message;
+  function openProductPicker(category: Category) {
+    if (!canEditCategories) return;
+    setAssigningCategory(category);
+    setProductPickerMode("UNCATEGORIZED");
+    setProductSearch("");
+    setSuccessMessage("");
+  }
+
+  function closeProductPicker() {
+    if (assignProductsMutation.isPending) return;
+    setAssigningCategory(null);
+    setProductSearch("");
+    setSelectedProductIds(new Set());
+    setAssignedProductIdsThisSession(new Set());
+    setRemovedProductIdsThisSession(new Set());
+    setPendingMoveProducts([]);
+    setPendingRemoveProducts([]);
+    setPendingRemoveCategory(null);
+    setSuccessMessage("");
+    setSuccessHint("");
+  }
+
+  function toggleProductSelection(productId: string) {
+    setSuccessMessage("");
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      if (next.has(productId)) next.delete(productId);
+      else next.add(productId);
+      return next;
+    });
+  }
+
+  function toggleVisibleProductSelection() {
+    setSuccessMessage("");
+    setSelectedProductIds((current) => {
+      const next = new Set(current);
+      if (allVisibleAssignableSelected) visibleAssignableProductIds.forEach((id) => next.delete(id));
+      else visibleAssignableProductIds.forEach((id) => next.add(id));
+      return next;
+    });
+  }
+
+  function requestAssignProducts(productIds: string[]) {
+    if (!assigningCategory || productIds.length === 0) return;
+    setSuccessMessage("");
+    const uniqueIds = Array.from(new Set(productIds));
+    const selectedProducts = (products.data ?? []).filter((product) => uniqueIds.includes(product.id));
+    const movingProducts = selectedProducts.filter((product) => product.category?.name && product.category.name !== assigningCategory.name);
+    if (movingProducts.length > 0) {
+      setPendingMoveProducts(movingProducts);
+      return;
+    }
+    assignProductsMutation.mutate({ productIds: uniqueIds, categoryName: assigningCategory.name });
+  }
+
+  function confirmMoveProducts() {
+    if (!assigningCategory || pendingMoveProducts.length === 0) return;
+    setSuccessMessage("");
+    const productIds = Array.from(new Set([...Array.from(selectedProductIds), ...pendingMoveProducts.map((product) => product.id)]));
+    assignProductsMutation.mutate({ productIds, categoryName: assigningCategory.name });
+  }
+
+  function requestRemoveProducts(category: Category, products: RemovableCategoryProduct[]) {
+    if (!canEditCategories || products.length === 0) return;
+    setSuccessMessage("");
+    setPendingRemoveCategory(category);
+    setPendingRemoveProducts(products);
+  }
+
+  function confirmRemoveProducts() {
+    if (!pendingRemoveCategory || pendingRemoveProducts.length === 0) return;
+    setSuccessMessage("");
+    const productIds = Array.from(new Set(pendingRemoveProducts.map((product) => product.id)));
+    assignProductsMutation.mutate({ productIds, categoryName: null, sourceCategoryName: pendingRemoveCategory.name });
+  }
+
+  const errorMessage = saveMutation.error?.message ?? deleteMutation.error?.message ?? assignProductsMutation.error?.message;
 
   if (!canViewCategories) {
     return (
@@ -223,48 +393,6 @@ export function CategoriesPage() {
         </div>
       </div>
 
-      {isFormOpen && canEditCategories ? (
-        <Card className="border-teal-200 bg-teal-50/40">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h2 className="text-lg font-black text-ink">{editingId ? `แก้ไขหมวดหมู่: ${form.name || "ไม่มีชื่อ"}` : "เพิ่มหมวดหมู่ใหม่"}</h2>
-              <p className="text-sm font-semibold text-stone-500">{editingId ? "ข้อมูลที่แก้ไขจะมีผลกับสินค้าที่ใช้หมวดหมู่นี้" : "ตั้งชื่อและเลือกสีเพื่อใช้จัดกลุ่มสินค้า"}</p>
-            </div>
-          </div>
-          <form className="grid gap-4 lg:grid-cols-[1fr_260px_auto]" onSubmit={submit}>
-            <label className="block">
-              <span className="text-sm font-bold text-stone-700">ชื่อหมวดหมู่</span>
-              <input className="field mt-1" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="เช่น เครื่องดื่ม" required autoFocus />
-            </label>
-            <label className="block">
-              <span className="text-sm font-bold text-stone-700">สี</span>
-              <div className="mt-1 flex h-11 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 shadow-sm">
-                <Palette size={16} className="text-stone-500" />
-                <input className="h-8 w-12 cursor-pointer rounded border border-stone-200 bg-white" type="color" value={form.color} onChange={(event) => setForm((current) => ({ ...current, color: event.target.value }))} aria-label="เลือกสีหมวดหมู่" />
-                <span className="font-mono text-sm font-semibold text-stone-600">{form.color}</span>
-              </div>
-            </label>
-            <div className="flex items-end gap-2">
-              <Button type="submit" disabled={saveMutation.isPending}>{editingId ? "บันทึก" : "สร้าง"}</Button>
-              <Button type="button" variant="secondary" icon={<X size={16} />} onClick={resetForm}>ยกเลิก</Button>
-            </div>
-            <div className="flex flex-wrap gap-2 lg:col-span-3">
-              {colorOptions.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  className={`h-8 w-8 rounded-md border shadow-sm transition hover:scale-105 ${form.color.toLowerCase() === color.toLowerCase() ? "border-ink ring-2 ring-stone-300" : "border-stone-200"}`}
-                  style={{ backgroundColor: color }}
-                  aria-label={`เลือกสี ${color}`}
-                  onClick={() => setForm((current) => ({ ...current, color }))}
-                />
-              ))}
-            </div>
-          </form>
-          {errorMessage ? <p className="mt-4 rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700">{errorMessage}</p> : null}
-        </Card>
-      ) : null}
-
       <Card className="p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="relative min-w-[240px] flex-1">
@@ -334,6 +462,7 @@ export function CategoriesPage() {
                     <div className="flex justify-end gap-2">
                       {canEditCategories ? (
                         <>
+                          <Button type="button" variant="secondary" icon={<Plus size={15} />} onClick={() => openProductPicker(category)}>เพิ่มสินค้า</Button>
                           <Button type="button" variant="secondary" icon={<Edit3 size={15} />} onClick={() => startEdit(category)}>แก้ไข</Button>
                           <Button type="button" variant="danger" icon={<Trash2 size={15} />} disabled={count > 0 || deleteMutation.isPending} onClick={() => remove(category)}>ลบ</Button>
                         </>
@@ -353,11 +482,15 @@ export function CategoriesPage() {
                         <div className="border-b border-stone-300 bg-stone-50 px-4 py-3 text-center font-black text-ink">
                           {category.name} • {number(count)} รายการ
                         </div>
-                        <div className="max-h-64 overflow-y-auto">
+                        <div
+                          className="max-h-64 overflow-y-auto overscroll-contain"
+                          onWheel={(event) => event.stopPropagation()}
+                          onTouchMove={(event) => event.stopPropagation()}
+                        >
                           {previewProducts.map((product, index) => {
                             const stock = productStockOf(product);
                             return (
-                              <div key={product.id} className="grid grid-cols-[44px_minmax(0,1fr)_auto] items-center border-b border-stone-200 last:border-b-0">
+                              <div key={product.id} className="grid grid-cols-[44px_minmax(0,1fr)_auto_auto] items-center border-b border-stone-200 last:border-b-0">
                                 <div className="border-r border-stone-200 px-3 py-2 text-center font-bold text-stone-600">{index + 1}</div>
                                 <div className="flex min-w-0 items-center gap-3 px-3 py-2">
                                   <ProductPreviewImage product={product} />
@@ -369,6 +502,19 @@ export function CategoriesPage() {
                                 <p className="px-4 py-2 text-right text-sm font-bold text-stone-700">
                                   คงเหลือ {number(stock)} {product.unit ?? "ชิ้น"}
                                 </p>
+                                {canEditCategories ? (
+                                  <div className="px-3 py-2">
+                                    <Button
+                                      type="button"
+                                      className="h-8 px-2.5"
+                                      variant="danger"
+                                      disabled={assignProductsMutation.isPending}
+                                      onClick={() => requestRemoveProducts(category, [{ ...product, category: { name: category.name } }])}
+                                    >
+                                      นำออก
+                                    </Button>
+                                  </div>
+                                ) : null}
                               </div>
                             );
                           })}
@@ -391,6 +537,309 @@ export function CategoriesPage() {
           </tbody>
         </table>
       </div>
+
+      {assigningCategory ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" role="dialog" aria-modal="true" aria-labelledby="category-product-picker-title" onMouseDown={closeProductPicker}>
+          <div className="flex max-h-[92vh] w-full max-w-5xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex flex-wrap items-start justify-between gap-3 border-b border-stone-200 bg-stone-50 p-5">
+              <div className="min-w-0">
+                <p className="text-xs font-black uppercase text-teal-700">เพิ่มสินค้าในหมวด</p>
+                <h2 id="category-product-picker-title" className="mt-1 text-2xl font-black text-ink">{assigningCategory.name}</h2>
+              </div>
+              <button
+                type="button"
+                className="grid h-9 w-9 place-items-center rounded-md text-stone-500 hover:bg-stone-100"
+                aria-label="ปิดหน้าต่างเพิ่มสินค้าในหมวด"
+                disabled={assignProductsMutation.isPending}
+                onClick={closeProductPicker}
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="border-b border-stone-200 p-4">
+              <div className="grid gap-3 lg:grid-cols-[minmax(260px,1fr)_auto_auto]">
+                <label className="relative block">
+                  <Search className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-stone-400" size={18} />
+                  <input
+                    className="field field-with-left-icon h-10"
+                    value={productSearch}
+                    onChange={(event) => setProductSearch(event.target.value)}
+                    placeholder="ค้นหาชื่อสินค้า SKU บาร์โค้ด หรือแบรนด์"
+                    autoFocus
+                  />
+                </label>
+                <div className="rounded-md border border-stone-200 bg-stone-50 p-0.5">
+                  <div className="flex gap-1">
+                    <ProductPickerModeButton selected={productPickerMode === "UNCATEGORIZED"} onClick={() => setProductPickerMode("UNCATEGORIZED")}>
+                      ยังไม่จัดหมวด
+                    </ProductPickerModeButton>
+                    <ProductPickerModeButton selected={productPickerMode === "ALL"} onClick={() => setProductPickerMode("ALL")}>
+                      สินค้าทั้งหมด
+                    </ProductPickerModeButton>
+                  </div>
+                </div>
+                <Button
+                  type="button"
+                  className="h-10 px-3"
+                  variant="secondary"
+                  disabled={visibleAssignableProductIds.length === 0}
+                  onClick={toggleVisibleProductSelection}
+                >
+                  {allVisibleAssignableSelected ? "ยกเลิกทั้งหมด" : "เลือกทั้งหมด"}
+                </Button>
+              </div>
+            </div>
+
+            {assignProductsMutation.isPending ? (
+              <div className="border-b border-amber-100 bg-amber-50 px-5 py-3">
+                <div className="flex items-center gap-2 text-sm font-black text-amber-800">
+                  <Plus size={18} />
+                  {assignProductsMutation.variables?.categoryName === null ? "กำลังนำสินค้าออกจากหมวด..." : "กำลังเพิ่มสินค้าเข้าหมวด..."}
+                </div>
+              </div>
+            ) : null}
+
+            {assignProductsMutation.error ? (
+              <p className="border-b border-red-100 bg-red-50 px-5 py-3 text-sm font-semibold text-red-700">{assignProductsMutation.error.message}</p>
+            ) : null}
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {products.isLoading ? <p className="p-6 text-center font-semibold text-stone-500">กำลังโหลดสินค้า...</p> : null}
+              {products.error ? <p className="p-6 text-center font-semibold text-red-700">โหลดสินค้าไม่สำเร็จ: {products.error.message}</p> : null}
+              {!products.isLoading && !products.error && productPickerRows.length === 0 ? (
+                <div className="p-8 text-center">
+                  <Package className="mx-auto text-stone-400" size={36} />
+                  <p className="mt-3 font-black text-ink">ไม่พบสินค้า</p>
+                  <p className="mt-1 text-sm font-semibold text-stone-500">ลองเปลี่ยนคำค้นหาหรือเปิดดูสินค้าทั้งหมด</p>
+                </div>
+              ) : null}
+              {productPickerRows.length > 0 ? (
+                <div className="divide-y divide-stone-100">
+                  {productPickerRows.map((product) => {
+                    const isLocallyAssigned = assignedProductIdsThisSession.has(product.id);
+                    const isLocallyRemoved = removedProductIdsThisSession.has(product.id);
+                    const isInTargetCategory = (product.category?.name === assigningCategory.name || isLocallyAssigned) && !isLocallyRemoved;
+                    const isSelected = selectedProductIds.has(product.id);
+                    return (
+                      <div key={product.id} className={`grid gap-3 p-4 sm:grid-cols-[auto_1fr_auto] sm:items-center ${isInTargetCategory ? "bg-stone-50" : "bg-white"}`}>
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            className="h-4 w-4 rounded border-stone-300 text-leaf disabled:opacity-40"
+                            aria-label={`เลือก ${getProductDisplayName(product)}`}
+                            checked={isSelected}
+                            disabled={isInTargetCategory || assignProductsMutation.isPending}
+                            onChange={() => toggleProductSelection(product.id)}
+                          />
+                          <ProductPickerImage product={product} />
+                        </div>
+                        <div className="min-w-0">
+                          <p className="truncate font-black text-ink">{getProductDisplayName(product)}</p>
+                          <p className="mt-0.5 truncate text-xs font-semibold text-stone-500">SKU {product.sku}{product.barcode ? ` / ${product.barcode}` : ""}</p>
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            <ProductCategoryBadge product={product} targetCategoryName={assigningCategory.name} isLocallyAssigned={isLocallyAssigned} isLocallyRemoved={isLocallyRemoved} />
+                            {product.brand?.name ? <span className="rounded bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600">{product.brand.name}</span> : null}
+                            <span className="rounded bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600">คงเหลือ {number(productStockOf(product))} {product.unit}</span>
+                          </div>
+                        </div>
+                        <div className="flex justify-end">
+                          <Button
+                            type="button"
+                            className="h-9 px-3"
+                            variant={isInTargetCategory ? "danger" : "secondary"}
+                            disabled={assignProductsMutation.isPending}
+                            onClick={() => isInTargetCategory ? requestRemoveProducts(assigningCategory, [product]) : requestAssignProducts([product.id])}
+                          >
+                            {isInTargetCategory ? "นำออก" : "เพิ่ม"}
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-stone-200 bg-white p-4">
+              <p className="text-sm font-bold text-stone-600">เลือก {number(selectedProductIds.size)} รายการ</p>
+              <div className="flex flex-wrap gap-2">
+                <Button type="button" variant="ghost" disabled={selectedProductIds.size === 0 || assignProductsMutation.isPending} onClick={() => setSelectedProductIds(new Set())}>ล้างที่เลือก</Button>
+                <Button type="button" icon={<Plus size={16} />} disabled={selectedProductIds.size === 0 || assignProductsMutation.isPending} onClick={() => requestAssignProducts(Array.from(selectedProductIds))}>
+                  {assignProductsMutation.isPending ? "กำลังเพิ่ม..." : "เพิ่มเข้าหมวดนี้"}
+                </Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isFormOpen && canEditCategories ? (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" role="dialog" aria-modal="true" aria-labelledby="category-form-title" onMouseDown={() => !saveMutation.isPending && resetForm()}>
+          <div className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4 border-b border-stone-200 bg-stone-50 p-5">
+              <div>
+                <p className="text-xs font-black uppercase text-teal-700">{editingId ? "แก้ไขหมวดหมู่" : "เพิ่มหมวดหมู่"}</p>
+                <h2 id="category-form-title" className="mt-1 text-2xl font-black text-ink">{editingId ? form.name || "แก้ไขหมวดหมู่" : "หมวดหมู่ใหม่"}</h2>
+              </div>
+              <button
+                type="button"
+                className="grid h-9 w-9 place-items-center rounded-md text-stone-500 hover:bg-stone-100"
+                aria-label="ปิดหน้าต่างหมวดหมู่"
+                disabled={saveMutation.isPending}
+                onClick={resetForm}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <form onSubmit={submit}>
+              <div className="space-y-4 p-5">
+                <label className="block">
+                  <span className="text-sm font-bold text-stone-700">ชื่อหมวดหมู่</span>
+                  <input className="field mt-1" value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} placeholder="เช่น เครื่องดื่ม" required autoFocus />
+                </label>
+                <label className="block">
+                  <span className="text-sm font-bold text-stone-700">สี</span>
+                  <div className="mt-1 flex h-11 items-center gap-2 rounded-md border border-stone-300 bg-white px-3 shadow-sm">
+                    <Palette size={16} className="text-stone-500" />
+                    <input className="h-8 w-12 cursor-pointer rounded border border-stone-200 bg-white" type="color" value={form.color} onChange={(event) => setForm((current) => ({ ...current, color: event.target.value }))} aria-label="เลือกสีหมวดหมู่" />
+                    <span className="font-mono text-sm font-semibold text-stone-600">{form.color}</span>
+                  </div>
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {colorOptions.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      className={`h-8 w-8 rounded-md border shadow-sm transition hover:scale-105 ${form.color.toLowerCase() === color.toLowerCase() ? "border-ink ring-2 ring-stone-300" : "border-stone-200"}`}
+                      style={{ backgroundColor: color }}
+                      aria-label={`เลือกสี ${color}`}
+                      onClick={() => setForm((current) => ({ ...current, color }))}
+                    />
+                  ))}
+                </div>
+                {errorMessage ? <p className="rounded-md bg-red-50 p-3 text-sm font-semibold text-red-700">{errorMessage}</p> : null}
+              </div>
+              <div className="flex flex-wrap justify-end gap-2 border-t border-stone-200 bg-stone-50 p-4">
+                <Button type="button" variant="ghost" disabled={saveMutation.isPending} onClick={resetForm}>ยกเลิก</Button>
+                <Button type="submit" disabled={saveMutation.isPending}>{saveMutation.isPending ? "กำลังบันทึก..." : editingId ? "บันทึก" : "สร้าง"}</Button>
+              </div>
+            </form>
+          </div>
+        </div>
+      ) : null}
+
+      {assigningCategory && pendingMoveProducts.length > 0 ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-ink/60 p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-move-products-title">
+          <div className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="border-b border-stone-200 p-5">
+              <h2 id="confirm-move-products-title" className="text-xl font-black text-ink">ย้ายสินค้ามาหมวดนี้ไหม?</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-stone-600">
+                มีสินค้า {number(pendingMoveProducts.length)} รายการที่อยู่ในหมวดอื่นอยู่แล้ว ถ้าตกลง ระบบจะเปลี่ยนมาอยู่ใน "{assigningCategory.name}"
+              </p>
+            </div>
+            <div className="max-h-72 overflow-y-auto p-4">
+              <div className="space-y-2">
+                {pendingMoveProducts.map((product) => (
+                  <div key={product.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                    <p className="font-black text-ink">{getProductDisplayName(product)}</p>
+                    <p className="mt-1 text-xs font-semibold text-stone-500">จากหมวด {product.category?.name ?? "ไม่จัดหมวด"}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-stone-200 p-4">
+              <Button type="button" variant="ghost" disabled={assignProductsMutation.isPending} onClick={() => setPendingMoveProducts([])}>ยกเลิก</Button>
+              <Button type="button" disabled={assignProductsMutation.isPending} onClick={confirmMoveProducts}>
+                {assignProductsMutation.isPending ? "กำลังย้าย..." : "ย้ายเข้าหมวดนี้"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {pendingRemoveCategory && pendingRemoveProducts.length > 0 ? (
+        <div className="fixed inset-0 z-[60] grid place-items-center bg-ink/60 p-4" role="dialog" aria-modal="true" aria-labelledby="confirm-remove-products-title">
+          <div className="w-full max-w-lg overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="border-b border-stone-200 p-5">
+              <h2 id="confirm-remove-products-title" className="text-xl font-black text-ink">นำสินค้าออกจากหมวดไหม?</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-stone-600">
+                ต้องการนำสินค้า {number(pendingRemoveProducts.length)} รายการออกจาก "{pendingRemoveCategory.name}" ใช่ไหม? สินค้าจะกลับไปอยู่ในกลุ่มยังไม่จัดหมวด
+              </p>
+            </div>
+            <div className="max-h-72 overflow-y-auto p-4">
+              <div className="space-y-2">
+                {pendingRemoveProducts.map((product) => (
+                  <div key={product.id} className="rounded-md border border-stone-200 bg-stone-50 p-3">
+                    <p className="font-black text-ink">{getProductDisplayName(product)}</p>
+                    <p className="mt-1 text-xs font-semibold text-stone-500">SKU {product.sku}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-stone-200 p-4">
+              <Button type="button" variant="ghost" disabled={assignProductsMutation.isPending} onClick={() => { setPendingRemoveProducts([]); setPendingRemoveCategory(null); }}>ยกเลิก</Button>
+              <Button type="button" variant="danger" disabled={assignProductsMutation.isPending} onClick={confirmRemoveProducts}>
+                {assignProductsMutation.isPending ? "กำลังนำออก..." : "นำออกจากหมวด"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {successMessage ? (
+        <div className="fixed inset-0 z-[70] grid place-items-center bg-ink/60 p-4" role="dialog" aria-modal="true" aria-labelledby="assign-products-success-title">
+          <div className="w-full max-w-md overflow-hidden rounded-lg bg-white shadow-2xl">
+            <div className="p-6 text-center">
+              <span className="mx-auto grid h-14 w-14 place-items-center rounded-full bg-teal-50 text-leaf ring-1 ring-teal-100">
+                <CheckCircle2 size={30} />
+              </span>
+              <h2 id="assign-products-success-title" className="mt-4 text-xl font-black text-ink">{successTitle}</h2>
+              <p className="mt-2 text-sm font-semibold leading-6 text-stone-600">{successMessage}</p>
+              {successHint ? <p className="mt-2 text-xs font-semibold text-stone-500">{successHint}</p> : null}
+            </div>
+            <div className="flex justify-center border-t border-stone-200 bg-stone-50 px-6 py-5">
+              <Button type="button" className="min-w-32" onClick={() => setSuccessMessage("")}>OK</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function ProductPickerModeButton({ selected, children, onClick }: { selected: boolean; children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-pressed={selected}
+      className={`h-9 rounded-md px-3 text-xs font-bold transition ${selected ? "bg-white text-leaf shadow-sm ring-1 ring-stone-200" : "text-stone-600 hover:bg-white hover:text-ink"}`}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ProductPickerImage({ product }: { product: ProductPickerProduct }) {
+  const imageUrl = getProductImageUrl(product);
+  if (imageUrl) return <img src={imageUrl} alt={product.name} className="h-12 w-12 shrink-0 rounded-md border border-stone-200 object-cover" />;
+  return (
+    <span className="grid h-12 w-12 shrink-0 place-items-center rounded-md border border-dashed border-stone-300 bg-stone-50 text-stone-400">
+      <ImageIcon size={20} />
+    </span>
+  );
+}
+
+function ProductCategoryBadge({ product, targetCategoryName, isLocallyAssigned = false, isLocallyRemoved = false }: { product: ProductPickerProduct; targetCategoryName: string; isLocallyAssigned?: boolean; isLocallyRemoved?: boolean }) {
+  if (isLocallyRemoved) {
+    return <span className="rounded bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600 ring-1 ring-stone-200">ไม่จัดหมวด</span>;
+  }
+  if (product.category?.name === targetCategoryName || isLocallyAssigned) {
+    return <span className="rounded bg-teal-50 px-2 py-1 text-xs font-bold text-teal-700 ring-1 ring-teal-100">อยู่ในหมวดนี้แล้ว</span>;
+  }
+  if (product.category?.name) {
+    return <span className="rounded bg-amber-50 px-2 py-1 text-xs font-bold text-amber-700 ring-1 ring-amber-100">อยู่ในหมวด: {product.category.name}</span>;
+  }
+  return <span className="rounded bg-stone-100 px-2 py-1 text-xs font-bold text-stone-600 ring-1 ring-stone-200">ไม่จัดหมวด</span>;
 }

@@ -15,6 +15,7 @@
     "lint": "npm run lint --workspaces --if-present",
     "db:generate": "npm run prisma:generate --workspace @zentory/api",
     "db:migrate": "npm run prisma:migrate --workspace @zentory/api",
+    "db:migrate:deploy": "npm run prisma:migrate:deploy --workspace @zentory/api",
     "db:seed": "npm run seed --workspace @zentory/api"
   },
   "engines": {

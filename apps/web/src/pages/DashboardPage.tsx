@@ -9,7 +9,7 @@ import { Dropdown, type DropdownOption } from "../components/Dropdown";
 import { api, patch } from "../lib/api";
 import { calculateSalesTargetPreview, dashboardPathForScope, getRoleDashboardPath, getSessionDashboardPath, type DashboardScope, type SalesTargetMode } from "../lib/dashboard";
 import { baht, number, thaiDate } from "../lib/format";
-import { notificationAuditPath, notificationBadgeClass, notificationListPath, notificationSummaryPath, notificationTypeLabel, type NotificationItem, type NotificationPage, type NotificationSummary, type NotificationType } from "../lib/notifications";
+import { isStockAdjustmentRequestNotification, notificationAuditPath, notificationDisplayTitle, notificationDisplayTypeLabel, notificationItemBadgeClass, notificationListPath, notificationSummaryPath, type NotificationItem, type NotificationPage, type NotificationSummary, type NotificationType } from "../lib/notifications";
 import { useAuth } from "../state/auth";
 import { useWorkingBranch } from "../state/working-branch";
 import type { EffectivePermissions, Role } from "@zentory/shared";
@@ -324,7 +324,7 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
 
   const historyItems = list.data ?? [];
   const allBranchHistoryItems = useMemo(() => {
-    return [...(historyList.data?.pages.flatMap((page) => page.items) ?? [])].sort((a, b) => new Date(b.notification.createdAt).getTime() - new Date(a.notification.createdAt).getTime());
+    return [...(historyList.data?.pages.flatMap((page) => page.items) ?? [])].sort(compareNotificationItems);
   }, [historyList.data]);
   const liveTransferItems = showTransferTasks ? [
     ...(transferRequestTasks.data ?? []).map((transfer) => transferTaskNotificationItem(transfer, "request")),
@@ -336,7 +336,7 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
   ]);
   const heading = isMultiBranch ? "การแจ้งเตือนทุกสาขา" : "การแจ้งเตือน";
   const historyHeading = isMultiBranch ? "ประวัติแจ้งเตือนทุกสาขา" : "ประวัติแจ้งเตือน";
-  const visibleItems = compact ? items.slice(0, 3) : items.slice(0, 8);
+  const visibleItems = compact ? items : items.slice(0, 8);
   const branchContext = !isMultiBranch && activeBranches[0]?.name ? activeBranches[0].name : undefined;
   const historyBranchContext = historyBranchId ? activeBranches.find((branch) => branch.id === historyBranchId)?.name : undefined;
   const branchOptions: DropdownOption[] = [
@@ -358,9 +358,10 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
   const closedCount = allBranchHistoryItems.filter((item) => item.notification.resolvedAt).length;
   const archivedCount = allBranchHistoryItems.filter((item) => item.archivedAt).length;
   const historyLoading = historyList.isLoading;
+  const showAllTasksButton = compact ? items.length > 3 : items.length > visibleItems.length;
 
   return (
-    <Card className={compact ? "flex min-h-[21rem] flex-col !p-4" : undefined}>
+    <Card className={compact ? "flex h-[27rem] min-h-0 flex-col !p-4" : undefined}>
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -375,9 +376,11 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
           <Button type="button" variant="secondary" className={compact ? "h-9 px-3 text-xs" : undefined} icon={<History size={15} />} onClick={() => setIsHistoryOpen(true)}>
             ดูประวัติ
           </Button>
-          <Button type="button" className={compact ? "h-9 px-3 text-xs shadow-sm" : undefined} icon={<Maximize2 size={15} />} onClick={() => setIsExpanded(true)}>
-            งานค้างทั้งหมด
-          </Button>
+          {!compact ? (
+            <Button type="button" icon={<Maximize2 size={15} />} onClick={() => setIsExpanded(true)}>
+              งานค้างทั้งหมด
+            </Button>
+          ) : null}
         </div>
       </div>
 
@@ -405,7 +408,7 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
         />
       </div>
 
-      <div className={compact ? "mt-3 space-y-2" : "mt-4 space-y-3"}>
+      <div className={compact ? "stable-scrollbar mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain pr-1" : "mt-4 space-y-3"}>
         {list.isLoading ? <p className="rounded-md border border-stone-200 p-4 text-sm font-semibold text-stone-500">กำลังโหลดแจ้งเตือน...</p> : null}
         {!list.isLoading && items.length === 0 ? (
           <div className="rounded-md border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
@@ -415,18 +418,18 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
         {visibleItems.map((item) => (
           <NotificationRow key={item.id} item={item} showBranch={isMultiBranch} compact={compact} />
         ))}
-        {compact && items.length > visibleItems.length ? (
-          <button
-            type="button"
-            className="flex h-10 w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-3 text-xs font-black text-white shadow-sm transition hover:bg-teal-800"
-            onClick={() => setIsExpanded(true)}
-          >
-            <Maximize2 size={14} />
-            <span>ดูงานค้างทั้งหมด {number(items.length)} รายการ</span>
-            <ArrowRight size={14} />
-          </button>
-        ) : null}
       </div>
+      {showAllTasksButton ? (
+        <button
+          type="button"
+          className="mt-3 flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-md bg-teal-700 px-3 text-xs font-black text-white shadow-sm transition hover:bg-teal-800"
+          onClick={() => setIsExpanded(true)}
+        >
+          <Maximize2 size={14} />
+          <span>ดูงานค้างทั้งหมด {number(items.length)} รายการ</span>
+          <ArrowRight size={14} />
+        </button>
+      ) : null}
       {isExpanded ? (
         <div className="fixed inset-0 z-50 grid overscroll-contain place-items-center bg-ink/50 p-4" role="dialog" aria-modal="true" aria-labelledby="owner-notifications-modal-title" onMouseDown={() => setIsExpanded(false)}>
           <div className="w-full max-w-5xl" onMouseDown={(event) => event.stopPropagation()}>
@@ -466,7 +469,7 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
                   menuClassName="w-max min-w-52 max-w-72"
                 />
               </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-5">
+              <div className="stable-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-5">
                 {list.isLoading ? <p className="rounded-md border border-stone-200 p-4 text-sm font-semibold text-stone-500">กำลังโหลดแจ้งเตือน...</p> : null}
                 {!list.isLoading && items.length === 0 ? (
                   <div className="rounded-md border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
@@ -518,7 +521,7 @@ function OwnerNotificationsPanel({ dashboardScope, activeBranches, isLoadingBran
                   menuClassName="w-max min-w-52 max-w-72"
                 />
               </div>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-5">
+              <div className="stable-scrollbar min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-5">
                 {historyLoading ? <p className="rounded-md border border-stone-200 p-4 text-sm font-semibold text-stone-500">กำลังโหลดประวัติแจ้งเตือน...</p> : null}
                 {!historyLoading && allBranchHistoryItems.length === 0 ? (
                   <div className="rounded-md border border-emerald-100 bg-emerald-50 p-4 text-sm font-semibold text-emerald-800">
@@ -551,14 +554,14 @@ function NotificationRow({ item, showBranch, compact = false, statusMode = "task
     <>
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className={`rounded px-2 py-0.5 text-xs font-black ring-1 ${notificationBadgeClass(notification.type, notification.severity)}`}>
+          <span className={`rounded px-2 py-0.5 text-xs font-black ring-1 ${notificationItemBadgeClass(item)}`}>
             {notificationDisplayTypeLabel(item)}
           </span>
           {showBranch && notification.branch?.name ? <span className="rounded bg-stone-100 px-2 py-0.5 text-xs font-black text-stone-700">{notification.branch.name}</span> : null}
           {showRecipient && recipientLabel ? <span className="rounded bg-slate-100 px-2 py-0.5 text-xs font-black text-slate-700">{recipientLabel}</span> : null}
-          <span className="text-xs font-semibold text-stone-500">{statusMode === "history" ? notificationHistoryLabel(item) : notificationTaskLabel(notification.type)}</span>
+          <span className="text-xs font-semibold text-stone-500">{statusMode === "history" ? notificationHistoryLabel(item) : notificationTaskLabel(item)}</span>
         </div>
-        <p className={compact ? "mt-1 truncate text-sm font-black text-ink" : "mt-2 truncate font-black text-ink"}>{notification.title}</p>
+        <p className={compact ? "mt-1 truncate text-sm font-black text-ink" : "mt-2 truncate font-black text-ink"}>{notificationDisplayTitle(item)}</p>
         <p className={`mt-1 font-semibold text-stone-600 ${compact ? "truncate text-xs" : "line-clamp-2 text-sm"}`}>
           {notification.body ? `${notification.body} • ` : ""}{thaiDate(notification.createdAt)}
         </p>
@@ -578,7 +581,9 @@ function NotificationRow({ item, showBranch, compact = false, statusMode = "task
   return <div className={`flex items-start gap-3 rounded-md border border-stone-200 ${compact ? "p-2" : "p-3"}`}>{content}</div>;
 }
 
-function notificationTaskLabel(type: NotificationType) {
+function notificationTaskLabel(item: NotificationItem) {
+  if (isStockAdjustmentRequestNotification(item)) return "ต้องจัดการ";
+  const type = item.notification.type;
   if (type === "SYSTEM" || type === "TRANSFER_STATUS") return "แจ้งเพื่อทราบ";
   return "ต้องจัดการ";
 }
@@ -586,19 +591,7 @@ function notificationTaskLabel(type: NotificationType) {
 function notificationHistoryLabel(item: NotificationItem) {
   if (item.notification.resolvedAt) return "ปิดแล้ว";
   if (item.archivedAt) return "เก็บถาวร";
-  return notificationTaskLabel(item.notification.type);
-}
-
-function notificationDisplayTypeLabel(item: NotificationItem) {
-  const notification = item.notification;
-  if (notification.type === "STOCK_ALERT") {
-    if (notification.severity === "CRITICAL" || notification.title.includes("หมดสต็อก")) return "สินค้าหมด";
-    return "สินค้าใกล้หมด";
-  }
-  if (notification.type === "TRANSFER_REQUEST" && (notification.dedupeKey?.startsWith("transfer-receive:") || notification.title.includes("รอยืนยันรับ"))) {
-    return "รอยืนยันรับสินค้า";
-  }
-  return notificationTypeLabel(notification.type);
+  return notificationTaskLabel(item);
 }
 
 function transferTaskPath(status: TransferTask["status"], side: "source" | "destination", branchId?: string) {
@@ -618,7 +611,7 @@ function transferTaskNotificationItem(transfer: TransferTask, direction: "reques
   const sourceName = transfer.sourceWarehouse.branch?.name ?? "ต้นทาง";
   const destinationName = transfer.destinationWarehouse.branch?.name ?? "ปลายทาง";
   const dedupeKey = direction === "receive" ? `transfer-receive:${transfer.id}` : `transfer-request:${transfer.id}`;
-  const title = direction === "receive" ? `คำขอโอน ${transfer.documentNo} รอยืนยันรับสินค้า` : `คำขอโอน ${transfer.documentNo} รออนุมัติ`;
+  const title = direction === "receive" ? `คำขอโอน ${transfer.documentNo} รอยืนยันรับของ` : `คำขอโอน ${transfer.documentNo} รออนุมัติ`;
   return {
     id: `live:${dedupeKey}`,
     readAt: null,
@@ -632,7 +625,7 @@ function transferTaskNotificationItem(transfer: TransferTask, direction: "reques
       severity: "WARNING",
       title,
       body: `${sourceName} ไป ${destinationName}`,
-      actionHref: "/app/transfers/requests",
+      actionHref: direction === "receive" ? "/app/transfers/requests" : "/app/activity-approvals",
       entityType: "StockTransfer",
       entityId: transfer.id,
       dedupeKey,
@@ -650,7 +643,34 @@ function mergeNotificationItems(items: NotificationItem[]) {
     const key = item.notification.dedupeKey || item.notification.entityId || item.notification.id || item.id;
     byKey.set(key, item);
   }
-  return Array.from(byKey.values()).sort((a, b) => new Date(b.notification.createdAt).getTime() - new Date(a.notification.createdAt).getTime());
+  return Array.from(byKey.values()).sort(compareNotificationItems);
+}
+
+function compareNotificationItems(a: NotificationItem, b: NotificationItem) {
+  const priorityDiff = notificationPriority(a) - notificationPriority(b);
+  if (priorityDiff !== 0) return priorityDiff;
+  const notificationTimeDiff = new Date(b.notification.createdAt).getTime() - new Date(a.notification.createdAt).getTime();
+  if (notificationTimeDiff !== 0) return notificationTimeDiff;
+  const recipientTimeDiff = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  if (recipientTimeDiff !== 0) return recipientTimeDiff;
+  return b.id.localeCompare(a.id);
+}
+
+function notificationPriority(item: NotificationItem) {
+  const notification = item.notification;
+  if (isApprovalNotification(item)) return 0;
+  if (notification.type === "STOCK_ALERT" && (notification.severity === "CRITICAL" || notification.title.includes("หมดสต็อก"))) return 1;
+  if (notification.type === "STOCK_ALERT") return 2;
+  return 3;
+}
+
+function isApprovalNotification(item: NotificationItem) {
+  const notification = item.notification;
+  return (
+    isStockAdjustmentRequestNotification(item) ||
+    notification.type === "STAFF_REQUEST" ||
+    notification.title.includes("รออนุมัติ")
+  );
 }
 
 function InventoryPlanCard({ inventory, business, isLoading }: { inventory: Dashboard["inventory"]; business?: Business; isLoading: boolean }) {
@@ -1075,10 +1095,12 @@ function DashboardScopeSelector({ scope, canSelectAllBranches, onScopeChange }: 
   const activeBranches = (branches.data ?? []).filter((branch) => branch.status !== "INACTIVE");
   const isMultiBranch = activeBranches.length > 1;
   const showAllBranchMode = canSelectAllBranches && isMultiBranch;
+  const showBranchModeToggle = isMultiBranch;
   const branchSelectValue = scope.mode === "BRANCH" ? scope.branchId ?? workingBranchId : "";
   const fallbackBranchId = branchSelectValue || activeBranches[0]?.id || workingBranchId || "";
   const canPickBranch = activeBranches.length > 0 || Boolean(fallbackBranchId);
-  const gridColumns = showAllBranchMode ? "sm:grid-cols-[15.5rem_14rem_auto]" : isMultiBranch ? "sm:grid-cols-[14rem_auto]" : "sm:grid-cols-[auto]";
+  const isBranchPickerDisabled = (showAllBranchMode && scope.mode !== "BRANCH") || branches.isLoading || activeBranches.length === 0;
+  const gridColumns = showBranchModeToggle ? "sm:grid-cols-[15.5rem_14rem_auto]" : "sm:grid-cols-[auto]";
 
   useEffect(() => {
     if (showAllBranchMode || scope.mode !== "ALL") return;
@@ -1103,11 +1125,12 @@ function DashboardScopeSelector({ scope, canSelectAllBranches, onScopeChange }: 
 
   return (
     <div className={`grid w-full grid-cols-1 gap-2 sm:w-auto ${gridColumns}`}>
-      {showAllBranchMode ? (
+      {showBranchModeToggle ? (
         <div className="grid h-10 grid-cols-2 rounded-md border border-stone-200 bg-stone-100/80 p-1 shadow-sm">
           <button
             type="button"
-            className={`h-8 rounded text-center text-sm font-black transition ${scope.mode === "ALL" ? "bg-leaf text-white shadow-sm" : "text-stone-600 hover:bg-white"}`}
+            className={`h-8 rounded text-center text-sm font-black transition ${scope.mode === "ALL" ? "bg-leaf text-white shadow-sm" : "text-stone-600 hover:bg-white"} ${!canSelectAllBranches ? "cursor-not-allowed opacity-60" : ""}`}
+            disabled={!canSelectAllBranches}
             onClick={selectAllBranches}
           >
             รวมทุกสาขา
@@ -1132,7 +1155,7 @@ function DashboardScopeSelector({ scope, canSelectAllBranches, onScopeChange }: 
               ...activeBranches.map((branch) => ({ value: branch.id, label: `${branch.name}${branch.code ? ` (${branch.code})` : ""}` }))
             ]}
             value={scope.mode === "BRANCH" ? branchSelectValue : fallbackBranchId}
-            disabled={(showAllBranchMode && scope.mode !== "BRANCH") || branches.isLoading || activeBranches.length === 0}
+            disabled={isBranchPickerDisabled}
             onValueChange={(value) => onScopeChange({ mode: "BRANCH", branchId: value || undefined })}
             aria-label="เลือกสาขาสำหรับ Dashboard"
           />

@@ -1,7 +1,8 @@
-import { Controller, Get, Query, UseGuards } from "@nestjs/common";
+import { Controller, Get, Header, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
 import { PermissionGuard } from "../common/roles.guard";
+import { ExportQueryDto, SaleListQueryDto } from "../common/dto";
 import { ZentoryService } from "../zentory.service";
 
 @Controller("reports")
@@ -29,7 +30,21 @@ export class ReportsController {
 
   @Get("sales")
   @UseGuards(PermissionGuard("reports.sales.read"))
-  sales(@CurrentUser() user: CurrentUser, @Query("branchId") branchId?: string, @Query("warehouseId") warehouseId?: string) {
-    return this.service.salesReport(user, { branchId, warehouseId });
+  sales(@CurrentUser() user: CurrentUser, @Query() query: SaleListQueryDto) {
+    return this.service.salesReport(user, query);
+  }
+
+  @Get("profit-loss")
+  @UseGuards(PermissionGuard("reports.sales.read"))
+  profitLoss(@CurrentUser() user: CurrentUser, @Query("branchId") branchId?: string, @Query("warehouseId") warehouseId?: string) {
+    return this.service.profitLossReport(user, { branchId, warehouseId });
+  }
+
+  @Get("export.xls")
+  @Header("Content-Type", "application/vnd.ms-excel; charset=utf-8")
+  @Header("Content-Disposition", "attachment; filename=\"zentory-export.xls\"")
+  @UseGuards(PermissionGuard("reports.sales.read"))
+  exportExcel(@CurrentUser() user: CurrentUser, @Query() query: ExportQueryDto) {
+    return this.service.exportExcel(user, query.type ?? "sales");
   }
 }

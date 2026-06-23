@@ -106,7 +106,7 @@ type DemoCategory = {
   createdAt: string;
 };
 
-type DemoState = {
+export type DemoState = {
   session?: AuthSession;
   business?: { id: string; name: string; province?: string; businessType?: string; branchCount?: string; onboardingCompleted?: boolean; onboardingProgress?: Record<string, boolean>; salesTargetMode?: SalesTargetMode; annualSalesTarget?: number | null; dailySalesTarget?: number | null; monthlySalesTarget?: number | null };
   branches: DemoBranch[];
@@ -122,6 +122,8 @@ type DemoState = {
 const key = "zentory.local-demo.v1";
 const storeBranchId = "local_store_branch_main";
 const defaultWarehouseId = "local_branch_main";
+const localDemoAccessToken = "local-demo-access";
+const localDemoRefreshToken = "local-demo-refresh";
 const managementStatuses: ProductStatus[] = ["ACTIVE", "PAUSED", "DISCONTINUED"];
 
 function id(prefix: string) {
@@ -136,6 +138,218 @@ function withDemoAccountMetadata(user: AuthSession["user"]): AuthSession["user"]
     updatedAt: user.updatedAt ?? now,
     authProviders: user.authProviders ?? { password: true, google: false }
   };
+}
+
+export function isLocalDemoToken(token?: string) {
+  return token === localDemoAccessToken;
+}
+
+export function isDemoSession(session?: AuthSession) {
+  return isLocalDemoToken(session?.accessToken);
+}
+
+export function createDemoSession(): AuthSession {
+  return {
+    accessToken: localDemoAccessToken,
+    refreshToken: localDemoRefreshToken,
+    user: withDemoAccountMetadata({
+      id: "local_demo_user",
+      name: "Demo User",
+      email: "demo@zentory.local",
+      isSystemAdmin: false,
+      authProviders: { password: false, google: false }
+    }),
+    business: {
+      id: "local_demo_business",
+      name: "ร้านตัวอย่าง Zentory",
+      role: "OWNER",
+      effectivePermissions: resolveEffectivePermissions("OWNER"),
+      province: "กรุงเทพมหานคร",
+      businessType: "ร้านค้าปลีก",
+      branchCount: "1",
+      onboardingCompleted: true,
+      onboardingProgress: {
+        setupStore: true,
+        firstProduct: true,
+        stockIn: true,
+        firstSale: true,
+        firstReport: true
+      },
+      assignedBranchIds: [storeBranchId],
+      planAccess: {
+        status: "ACTIVE",
+        paymentMode: "DEMO",
+        isLimited: false,
+        allowedBranchIds: [storeBranchId],
+        allowedWarehouseIds: [defaultWarehouseId],
+        memberLocked: false
+      }
+    }
+  };
+}
+
+function demoIsoDate(daysAgo: number, hour = 10, minute = 0) {
+  const date = new Date();
+  date.setHours(hour, minute, 0, 0);
+  date.setDate(date.getDate() - daysAgo);
+  return date.toISOString();
+}
+
+export function seedDemoState(): DemoState {
+  const session = createDemoSession();
+  const branch: DemoBranch = {
+    id: defaultWarehouseId,
+    name: "หน้าร้านหลัก",
+    code: "MAIN",
+    type: "STORE_FRONT",
+    status: "ACTIVE",
+    address: "123 ถนนสุขุมวิท แขวงตัวอย่าง กรุงเทพฯ",
+    contactName: "คุณเดโม",
+    contactPhone: "080-000-0000",
+    note: "ข้อมูลตัวอย่างสำหรับทดลองใช้งาน",
+    isDefault: true,
+    createdAt: demoIsoDate(21)
+  };
+  const categories: DemoCategory[] = [
+    { id: "demo_category_drinks", name: "เครื่องดื่ม", color: "#2563eb", createdAt: demoIsoDate(21) },
+    { id: "demo_category_snacks", name: "ขนม", color: "#f59e0b", createdAt: demoIsoDate(21) },
+    { id: "demo_category_household", name: "ของใช้ในบ้าน", color: "#16a34a", createdAt: demoIsoDate(21) },
+    { id: "demo_category_stationery", name: "เครื่องเขียน", color: "#7c3aed", createdAt: demoIsoDate(21) }
+  ];
+  const products: DemoProduct[] = [
+    ["demo_product_water", "DRINK-001", "885000000001", "น้ำดื่ม 600ml", "เครื่องดื่ม", "Zentory", 5, 10, 12, 42],
+    ["demo_product_coffee", "DRINK-002", "885000000002", "กาแฟกระป๋อง", "เครื่องดื่ม", "Demo", 12, 20, 12, 18],
+    ["demo_product_tea", "DRINK-003", "885000000003", "ชาเขียวขวด", "เครื่องดื่ม", "Demo", 13, 22, 10, 8],
+    ["demo_product_chips", "SNACK-001", "885000000004", "มันฝรั่งถุงเล็ก", "ขนม", "Crispy", 8, 15, 10, 26],
+    ["demo_product_biscuit", "SNACK-002", "885000000005", "บิสกิต", "ขนม", "Crispy", 10, 18, 8, 14],
+    ["demo_product_soap", "HOME-001", "885000000006", "สบู่ก้อน", "ของใช้ในบ้าน", "Clean", 14, 25, 8, 20],
+    ["demo_product_tissue", "HOME-002", "885000000007", "กระดาษทิชชู่", "ของใช้ในบ้าน", "Clean", 18, 29, 10, 9],
+    ["demo_product_battery", "HOME-003", "885000000008", "ถ่าน AA แพ็ก 2", "ของใช้ในบ้าน", "Power", 22, 35, 6, 4],
+    ["demo_product_pen", "STAT-001", "885000000009", "ปากกาลูกลื่น", "เครื่องเขียน", "Write", 4, 8, 20, 55],
+    ["demo_product_notebook", "STAT-002", "885000000010", "สมุดโน้ต A5", "เครื่องเขียน", "Write", 12, 25, 10, 17]
+  ].map(([idValue, sku, barcode, name, categoryName, brandName, costPrice, salePrice, minStock, stock]) => ({
+    id: String(idValue),
+    sku: String(sku),
+    barcode: String(barcode),
+    name: String(name),
+    unit: "ชิ้น",
+    costPrice: String(costPrice),
+    salePrice: String(salePrice),
+    minStock: Number(minStock),
+    status: "ACTIVE",
+    category: { name: String(categoryName) },
+    brand: { name: String(brandName) },
+    balances: [{ warehouseId: defaultWarehouseId, quantity: Number(stock) }]
+  }));
+
+  const productById = new Map(products.map((product) => [product.id, product]));
+  const saleSpecs = [
+    { id: "demo_sale_1", receiptNo: "DEMO-0001", daysAgo: 0, hour: 9, items: [["demo_product_water", 3], ["demo_product_chips", 2]], paymentMethod: "CASH" },
+    { id: "demo_sale_2", receiptNo: "DEMO-0002", daysAgo: 0, hour: 14, items: [["demo_product_coffee", 2], ["demo_product_tissue", 1]], paymentMethod: "TRANSFER" },
+    { id: "demo_sale_3", receiptNo: "DEMO-0003", daysAgo: 1, hour: 16, items: [["demo_product_soap", 2], ["demo_product_pen", 5]], paymentMethod: "CASH" },
+    { id: "demo_sale_4", receiptNo: "DEMO-0004", daysAgo: 3, hour: 11, items: [["demo_product_battery", 1], ["demo_product_notebook", 2]], paymentMethod: "CASH" },
+    { id: "demo_sale_5", receiptNo: "DEMO-0005", daysAgo: 6, hour: 13, items: [["demo_product_tea", 4], ["demo_product_biscuit", 3]], paymentMethod: "TRANSFER" },
+    { id: "demo_sale_6", receiptNo: "DEMO-0006", daysAgo: 9, hour: 10, items: [["demo_product_water", 6], ["demo_product_pen", 3]], paymentMethod: "CASH" }
+  ] as const;
+  const sales: DemoSale[] = saleSpecs.map((sale) => {
+    const items = sale.items.map(([productId, quantity]) => {
+      const product = productById.get(productId)!;
+      return {
+        product,
+        quantity,
+        unitPrice: product.salePrice,
+        unitCost: product.costPrice,
+        total: String(Number(product.salePrice) * quantity)
+      };
+    });
+    const subtotal = items.reduce((sum, item) => sum + Number(item.total), 0);
+    return {
+      id: sale.id,
+      receiptNo: sale.receiptNo,
+      subtotal: String(subtotal),
+      discount: "0",
+      total: String(subtotal),
+      paymentMethod: sale.paymentMethod,
+      createdAt: demoIsoDate(sale.daysAgo, sale.hour),
+      items
+    };
+  });
+  const movements: DemoState["movements"] = [
+    ...products.map((product, index) => ({
+      id: `demo_movement_receive_${index + 1}`,
+      type: "RECEIVE_IN",
+      quantity: product.balances[0]?.quantity ?? 0,
+      balanceBefore: 0,
+      balanceAfter: product.balances[0]?.quantity ?? 0,
+      reference: "DEMO-SEED",
+      createdAt: demoIsoDate(12, 9, index),
+      product: { name: product.name },
+      user: { name: "Demo User" },
+      warehouse: { id: defaultWarehouseId, name: branch.name, branch: demoBranchForWarehouse(branch) }
+    })),
+    ...sales.flatMap((sale) => sale.items.map((item, index) => ({
+      id: `demo_movement_sale_${sale.id}_${index}`,
+      type: "SALE_OUT",
+      quantity: item.quantity,
+      reference: sale.receiptNo,
+      createdAt: sale.createdAt,
+      product: { name: item.product.name },
+      user: { name: "Demo User" },
+      warehouse: { id: defaultWarehouseId, name: branch.name, branch: demoBranchForWarehouse(branch) }
+    })))
+  ];
+  return {
+    session,
+    business: {
+      id: "local_demo_business",
+      name: "ร้านตัวอย่าง Zentory",
+      province: "กรุงเทพมหานคร",
+      businessType: "ร้านค้าปลีก",
+      branchCount: "1",
+      onboardingCompleted: true,
+      onboardingProgress: {
+        setupStore: true,
+        firstProduct: true,
+        stockIn: true,
+        firstSale: true,
+        firstReport: true
+      },
+      salesTargetMode: "DAILY",
+      annualSalesTarget: 2400000,
+      monthlySalesTarget: 200000,
+      dailySalesTarget: 6500
+    },
+    branches: [branch],
+    categories,
+    products,
+    sales,
+    transfers: [],
+    stockCounts: [],
+    movements,
+    members: [{
+      id: "local_demo_member",
+      role: "OWNER",
+      status: "ACTIVE",
+      permissionOverrides: {},
+      assignedBranchIds: [branch.id],
+      user: session.user,
+      createdAt: demoIsoDate(21)
+    }]
+  };
+}
+
+export function startLocalDemo() {
+  const state = seedDemoState();
+  save(state);
+  return state.session ?? createDemoSession();
+}
+
+export function resetLocalDemo() {
+  return startLocalDemo();
+}
+
+export function clearLocalDemo() {
+  localStorage.removeItem(key);
 }
 
 function initialState(): DemoState {
@@ -828,8 +1042,8 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
 
   if (route === "/auth/register" && method === "POST") {
     const session: AuthSession = {
-      accessToken: "local-demo-access",
-      refreshToken: "local-demo-refresh",
+      accessToken: localDemoAccessToken,
+      refreshToken: localDemoRefreshToken,
       user: withDemoAccountMetadata({ id: "local_user", name: body.name, email: body.email, isSystemAdmin: false })
     };
     state.session = session;
@@ -839,8 +1053,8 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
 
   if (route === "/auth/login" && method === "POST") {
     const session = state.session ?? {
-      accessToken: "local-demo-access",
-      refreshToken: "local-demo-refresh",
+      accessToken: localDemoAccessToken,
+      refreshToken: localDemoRefreshToken,
       user: withDemoAccountMetadata({ id: "local_user", name: "Demo User", email: body.email, isSystemAdmin: false }),
       business: state.business
         ? {
@@ -861,8 +1075,8 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
 
   if (route === "/auth/google" && method === "POST") {
     const session = state.session ?? {
-      accessToken: "local-demo-access",
-      refreshToken: "local-demo-refresh",
+      accessToken: localDemoAccessToken,
+      refreshToken: localDemoRefreshToken,
       user: withDemoAccountMetadata({ id: "local_user", name: "Demo User", email: "demo@zentory.local", authProviders: { password: false, google: true }, isSystemAdmin: false }),
       business: state.business
         ? {
@@ -889,6 +1103,16 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     return { ok: true } as T;
   }
 
+  if (route === "/auth/refresh" && method === "POST") {
+    if (!state.session) throw new Error("กรุณาเข้าสู่ระบบ");
+    return state.session as T;
+  }
+
+  if (route === "/me" && method === "GET") {
+    if (!state.session) throw new Error("กรุณาเข้าสู่ระบบ");
+    return state.session as T;
+  }
+
   if (route === "/me/profile" && method === "PATCH") {
     if (!state.session) throw new Error("กรุณาเข้าสู่ระบบ");
     const name = normalizeText(body.name);
@@ -907,6 +1131,36 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     state.session = nextSession;
     save(state);
     return nextSession as T;
+  }
+
+  if (route === "/notifications/summary" && method === "GET") {
+    return {
+      unreadCount: 0,
+      activeCount: 0,
+      openActionCount: 0,
+      stockCount: 0,
+      outOfStockCount: 0,
+      lowStockCount: 0,
+      transferRequestCount: 0,
+      transferReceiveCount: 0,
+      staffRequestCount: 0,
+      stockCountReviewCount: 0,
+      stockAdjustmentRequestCount: 0,
+      archivedCount: 0,
+      preview: []
+    } as T;
+  }
+  if (route === "/notifications" && method === "GET") {
+    return url.searchParams.get("status") === "history" ? { items: [], nextCursor: null } as T : [] as T;
+  }
+  if (route === "/notifications/audit" && method === "GET") {
+    return { items: [], nextCursor: null } as T;
+  }
+  if (route === "/notifications/read-all" && method === "PATCH") {
+    return { ok: true } as T;
+  }
+  if (route.startsWith("/notifications/") && method === "PATCH") {
+    return { ok: true } as T;
   }
 
   if (route === "/reports/dashboard") return dashboard(state) as T;
@@ -1440,7 +1694,7 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     if (!state.business) throw new Error("ยังไม่ได้ตั้งค่าร้าน");
     ensureDefaultBranch(state);
     save(state);
-    return { ...state.business, branches: state.branches, subscription: { plan: { name: "Local Demo", productLimit: 30, userLimit: 5 } } } as T;
+    return { ...state.business, branches: state.branches, subscription: { plan: { name: "Starter Demo", productLimit: 200, userLimit: 2 } } } as T;
   }
   if (route === "/businesses/dashboard-goals" && method === "PATCH") {
     if (!state.business) throw new Error("ยังไม่ได้ตั้งค่าร้าน");
@@ -1562,6 +1816,22 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     return product as T;
   }
 
+  if (route === "/products/bulk/category" && method === "PATCH") {
+    if (!canManageProductMasterInDemo(state)) throw new Error("เฉพาะเจ้าของร้านเท่านั้นที่เพิ่มหรือแก้ข้อมูลหลักของสินค้าได้");
+    const productIds = Array.isArray(body.productIds) ? Array.from(new Set(body.productIds.map((item: unknown) => normalizeText(item)))) : [];
+    if (productIds.length === 0) throw new Error("กรุณาเลือกสินค้าอย่างน้อย 1 รายการ");
+    const categoryName = normalizeText(body.categoryName);
+    let updatedCount = 0;
+    for (const product of state.products) {
+      if (!productIds.includes(product.id) || product.status === "ARCHIVED") continue;
+      product.category = categoryName ? { name: categoryName } : undefined;
+      updatedCount += 1;
+    }
+    if (updatedCount === 0) throw new Error("ไม่พบสินค้าที่แก้ไขได้");
+    save(state);
+    return { updatedCount, categoryName: categoryName || null } as T;
+  }
+
   if (route.startsWith("/products/") && route.endsWith("/pause") && method === "PATCH") {
     const productId = route.split("/")[2];
     const product = state.products.find((item) => item.id === productId);
@@ -1583,7 +1853,7 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     const product = state.products.find((item) => item.id === productId);
     if (!product) throw new Error("Product not found");
     const counted = product.status === "ACTIVE" || product.status === "PAUSED" || (product.status === "DISCONTINUED" && stockOf(product) > 0);
-    if (!counted && usedProductLimit(state) >= 30) throw new Error("แพ็กเกจของคุณถึงขีดจำกัดจำนวนสินค้าแล้ว กรุณาปิด/เก็บสินค้าอื่นก่อน หรืออัปเกรดแพ็กเกจ");
+    if (!counted && usedProductLimit(state) >= 200) throw new Error("แพ็กเกจของคุณถึงขีดจำกัดจำนวนสินค้าแล้ว กรุณาปิด/เก็บสินค้าอื่นก่อน หรืออัปเกรดแพ็กเกจ");
     product.status = product.status === "ARCHIVED" ? "PAUSED" : "ACTIVE";
     save(state);
     return product as T;
@@ -1805,8 +2075,8 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     }
     const session: AuthSession = {
       ...(state.session ?? {
-        accessToken: "local-demo-access",
-        refreshToken: "local-demo-refresh",
+        accessToken: localDemoAccessToken,
+        refreshToken: localDemoRefreshToken,
         user: withDemoAccountMetadata({ id: "local_user", name: employeeName, email: "demo@zentory.local", phone: employeePhone, isSystemAdmin: false })
       }),
       business: undefined,
@@ -1924,8 +2194,8 @@ export async function localDemo<T>(path: string, init: RequestInit = {}) {
     ensureDefaultBranch(state);
     const session: AuthSession = {
       ...(state.session ?? {
-        accessToken: "local-demo-access",
-        refreshToken: "local-demo-refresh",
+        accessToken: localDemoAccessToken,
+        refreshToken: localDemoRefreshToken,
         user: withDemoAccountMetadata({ id: "local_user", name: "Demo User", email: "demo@zentory.app", isSystemAdmin: false })
       }),
       membershipRequest: undefined,

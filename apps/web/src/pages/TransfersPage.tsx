@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowRightLeft, ChevronDown, ClipboardList, Image as ImageIcon, Plus, Trash2 } from "lucide-react";
+import { ArrowRightLeft, CheckCircle2, ChevronDown, ClipboardList, Image as ImageIcon, Plus, Trash2 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
@@ -251,7 +251,6 @@ export function TransfersPage() {
     if (!keyword) return rows;
     return rows.filter((transfer) => transfer.documentNo.toLowerCase().includes(keyword));
   }, [requestedReference, transfers.data]);
-  const actionTransferCount = requestedTransfers.length + inTransitTransfers.length;
 
   useEffect(() => {
     if (!activeWarehouses.length) return;
@@ -336,10 +335,10 @@ export function TransfersPage() {
         <div className="flex flex-wrap items-center justify-end gap-2">
           {canViewTransferRequests(session) ? (
             <Link to="/app/transfers/requests" className="relative inline-flex">
-              <Button className="h-9 px-3" variant="secondary" icon={<ClipboardList size={17} />}>คำขอ/รอรับของโอน</Button>
-              {actionTransferCount > 0 ? (
+              <Button className="h-9 px-3" variant="secondary" icon={<CheckCircle2 size={17} />}>รอยืนยันรับของ</Button>
+              {inTransitTransfers.length > 0 ? (
                 <span className="absolute -right-2 -top-2 grid h-5 min-w-5 place-items-center rounded-full bg-red-500 px-1 text-[11px] font-black leading-none text-white shadow-sm ring-2 ring-white">
-                  {actionTransferCount > 9 ? "9+" : number(actionTransferCount)}
+                  {inTransitTransfers.length > 9 ? "9+" : number(inTransitTransfers.length)}
                 </span>
               ) : null}
             </Link>

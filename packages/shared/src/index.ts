@@ -28,6 +28,107 @@ export type Permission = (typeof permissions)[number];
 export type PermissionOverrides = Partial<Record<Permission, boolean>>;
 export type EffectivePermissions = Record<Permission, boolean>;
 
+export const paidPlanCodes = ["STARTER", "PROFESSIONAL", "MULTI_BRANCH"] as const;
+export type PaidPlanCode = (typeof paidPlanCodes)[number];
+
+export type PlanCapabilities = {
+  canUseStockCount: boolean;
+  canUseApprovalWorkflow: boolean;
+  canUseAuditLog: boolean;
+  canUseProfitLoss: boolean;
+  canUseBranchTransfer: boolean;
+  canUseMultiBranch: boolean;
+  canUseAdvancedExport: boolean;
+};
+
+export const planCapabilities = {
+  STARTER: {
+    canUseStockCount: true,
+    canUseApprovalWorkflow: false,
+    canUseAuditLog: false,
+    canUseProfitLoss: false,
+    canUseBranchTransfer: false,
+    canUseMultiBranch: false,
+    canUseAdvancedExport: false
+  },
+  PROFESSIONAL: {
+    canUseStockCount: true,
+    canUseApprovalWorkflow: true,
+    canUseAuditLog: true,
+    canUseProfitLoss: true,
+    canUseBranchTransfer: false,
+    canUseMultiBranch: false,
+    canUseAdvancedExport: true
+  },
+  MULTI_BRANCH: {
+    canUseStockCount: true,
+    canUseApprovalWorkflow: true,
+    canUseAuditLog: true,
+    canUseProfitLoss: true,
+    canUseBranchTransfer: true,
+    canUseMultiBranch: true,
+    canUseAdvancedExport: true
+  }
+} satisfies Record<PaidPlanCode, PlanCapabilities>;
+
+export const planCatalog = {
+  STARTER: {
+    code: "STARTER",
+    name: "Starter",
+    productLimit: 200,
+    userLimit: 2,
+    branchLimit: 1,
+    warehouseLimit: 1,
+    priceMonthly: 399,
+    priceYearly: 3990,
+    capabilities: planCapabilities.STARTER
+  },
+  PROFESSIONAL: {
+    code: "PROFESSIONAL",
+    name: "Professional",
+    productLimit: 1500,
+    userLimit: 6,
+    branchLimit: 1,
+    warehouseLimit: 2,
+    priceMonthly: 899,
+    priceYearly: 8990,
+    capabilities: planCapabilities.PROFESSIONAL
+  },
+  MULTI_BRANCH: {
+    code: "MULTI_BRANCH",
+    name: "Multi-Branch",
+    productLimit: 3000,
+    userLimit: 12,
+    branchLimit: 2,
+    warehouseLimit: 4,
+    priceMonthly: 1790,
+    priceYearly: 17900,
+    capabilities: planCapabilities.MULTI_BRANCH
+  }
+} satisfies Record<PaidPlanCode, {
+  code: PaidPlanCode;
+  name: string;
+  productLimit: number;
+  userLimit: number;
+  branchLimit: number;
+  warehouseLimit: number;
+  priceMonthly: number;
+  priceYearly: number;
+  capabilities: PlanCapabilities;
+}>;
+
+export function normalizePlanCode(code: string | undefined | null): PaidPlanCode | undefined {
+  const normalized = code?.trim().toUpperCase().replace(/-/g, "_");
+  if (normalized === "FREE") return "STARTER";
+  if (normalized === "PRO") return "PROFESSIONAL";
+  if (normalized === "PREMIUM") return "MULTI_BRANCH";
+  return paidPlanCodes.find((planCode) => planCode === normalized);
+}
+
+export function resolvePlanCapabilities(code: string | undefined | null): PlanCapabilities {
+  return planCatalog[normalizePlanCode(code) ?? "STARTER"].capabilities;
+}
+
 const productMasterPermissions = ["products.create", "products.update", "products.update_price", "products.update_cost", "products.archive"];
 const managerPermissions = permissions.filter((permission) => ![...productMasterPermissions, "members.manage", "business.update", "subscription.manage"].includes(permission));
 const branchManagerPermissions = permissions.filter((permission) => ![...productMasterPermissions, "branches.manage", "members.manage", "business.update", "subscription.manage"].includes(permission));
@@ -157,6 +258,22 @@ export type AuthSession = {
     onboardingCompleted?: boolean;
     onboardingProgress?: Record<string, boolean>;
     assignedBranchIds?: string[];
+    planAccess?: {
+      status: string;
+      paymentMode: string;
+      isLimited: boolean;
+      graceEndsAt?: string | null;
+      capabilities?: PlanCapabilities;
+      allowedBranchIds: string[];
+      allowedWarehouseIds: string[];
+      memberLocked?: boolean;
+      lockedCounts?: {
+        branches: number;
+        warehouses: number;
+        members: number;
+        products: number;
+      };
+    };
   };
   membershipRequest?: {
     id: string;

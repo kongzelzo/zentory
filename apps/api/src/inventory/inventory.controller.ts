@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Patch, Post, Query, UseGuards } from "@nestjs/common";
 import { AuthGuard } from "../common/auth.guard";
 import { CurrentUser } from "../common/current-user.decorator";
-import { AdjustmentDto, ReceiptDto, StockCountCreateDto, StockCountItemsUpdateDto, TransferDto } from "../common/dto";
+import { AdjustmentDto, AdjustmentRejectDto, ReceiptDto, StockCountCreateDto, StockCountItemsUpdateDto, TransferDto } from "../common/dto";
 import { MinRoleGuard, PermissionGuard } from "../common/roles.guard";
 import { ZentoryService } from "../zentory.service";
 
@@ -32,6 +32,30 @@ export class InventoryController {
   @UseGuards(PermissionGuard("inventory.adjust"))
   adjust(@CurrentUser() user: CurrentUser, @Body() dto: AdjustmentDto) {
     return this.service.adjust(user, dto);
+  }
+
+  @Get("adjustments")
+  @UseGuards(PermissionGuard("inventory.read"))
+  adjustments(@CurrentUser() user: CurrentUser, @Query("status") status?: string, @Query("branchId") branchId?: string, @Query("warehouseId") warehouseId?: string) {
+    return this.service.listAdjustments(user, { status, branchId, warehouseId });
+  }
+
+  @Get("adjustments/:id")
+  @UseGuards(PermissionGuard("inventory.read"))
+  adjustment(@CurrentUser() user: CurrentUser, @Param("id") id: string) {
+    return this.service.getAdjustment(user, id);
+  }
+
+  @Patch("adjustments/:id/approve")
+  @UseGuards(MinRoleGuard("MANAGER"))
+  approveAdjustment(@CurrentUser() user: CurrentUser, @Param("id") id: string) {
+    return this.service.approveAdjustment(user, id);
+  }
+
+  @Patch("adjustments/:id/reject")
+  @UseGuards(MinRoleGuard("MANAGER"))
+  rejectAdjustment(@CurrentUser() user: CurrentUser, @Param("id") id: string, @Body() dto: AdjustmentRejectDto) {
+    return this.service.rejectAdjustment(user, id, dto.reason);
   }
 
   @Get("stock-counts")

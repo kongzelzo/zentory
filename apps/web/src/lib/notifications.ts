@@ -37,6 +37,7 @@ export type NotificationSummary = {
   transferReceiveCount: number;
   staffRequestCount: number;
   stockCountReviewCount: number;
+  stockAdjustmentRequestCount: number;
   archivedCount: number;
   preview: NotificationItem[];
 };
@@ -69,6 +70,41 @@ export function notificationTypeLabel(type: NotificationType) {
   }
 }
 
+export function isStockAdjustmentRequestNotification(item: NotificationItem) {
+  const notification = item.notification;
+  return (
+    notification.dedupeKey?.startsWith("stock-adjustment-request:") ||
+    notification.entityType === "StockAdjustment" ||
+    (notification.actionHref === "/app/activity-approvals" && notification.title.includes("รออนุมัติ"))
+  );
+}
+
+export function notificationDisplayTypeLabel(item: NotificationItem) {
+  const notification = item.notification;
+  if (isStockAdjustmentRequestNotification(item)) return "รออนุมัติ";
+  if (notification.type === "STOCK_ALERT") {
+    if (notification.severity === "CRITICAL" || notification.title.includes("หมดสต็อก")) return "สินค้าหมด";
+    return "สินค้าใกล้หมด";
+  }
+  if (notification.type === "TRANSFER_REQUEST" && (notification.dedupeKey?.startsWith("transfer-receive:") || notification.title.includes("รอยืนยันรับ"))) {
+    return "รอยืนยันรับของ";
+  }
+  return notificationTypeLabel(notification.type);
+}
+
+export function notificationDisplayTitle(item: NotificationItem) {
+  if (!isStockAdjustmentRequestNotification(item)) return item.notification.title;
+
+  const bodyParts = item.notification.body?.split(" • ").map((part) => part.trim()).filter(Boolean) ?? [];
+  const productName = bodyParts[0];
+  const quantityPart = bodyParts.find((part) => /^(เพิ่ม|ลด)\s+\d/.test(part));
+  if (!productName || !quantityPart) return item.notification.title;
+
+  const [direction, quantity] = quantityPart.split(/\s+/, 2);
+  const action = direction === "ลด" ? "ขอลดสต็อก" : "ขอเพิ่มสต็อก";
+  return `${productName} ${action} ${quantity}`;
+}
+
 export function notificationSeverityClass(severity: NotificationSeverity) {
   switch (severity) {
     case "CRITICAL":
@@ -87,6 +123,11 @@ export function notificationBadgeClass(type: NotificationType, severity: Notific
   if (type === "STAFF_REQUEST") return "bg-teal-50 text-teal-700 ring-teal-100";
   if (type === "STOCK_COUNT") return "bg-indigo-50 text-indigo-700 ring-indigo-100";
   return notificationSeverityClass(severity);
+}
+
+export function notificationItemBadgeClass(item: NotificationItem) {
+  if (isStockAdjustmentRequestNotification(item)) return "bg-indigo-50 text-indigo-700 ring-indigo-100";
+  return notificationBadgeClass(item.notification.type, item.notification.severity);
 }
 
 export function notificationSummaryPath(branchId?: string) {

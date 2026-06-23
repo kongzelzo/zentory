@@ -1,14 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { FormEvent, useState } from "react";
-import { ArrowLeft, CheckCircle2, CreditCard, QrCode, ShieldCheck, Sparkles } from "lucide-react";
-import { Link, useSearchParams } from "react-router-dom";
+import { ArrowLeft, CheckCircle2, CreditCard, QrCode, ShieldCheck } from "lucide-react";
+import { Link, Navigate, useSearchParams } from "react-router-dom";
 import { Button } from "../components/Button";
 import { Card } from "../components/Card";
 import { api, post } from "../lib/api";
 import { baht, thaiDate } from "../lib/format";
 import { useAuth } from "../state/auth";
 
-type PlanCode = "free" | "pro" | "premium";
+type PlanCode = "starter" | "professional" | "multi_branch";
 export type CheckoutMode = "subscription" | "promptpay";
 type AccountPayment = {
   reference: string;
@@ -16,6 +16,10 @@ type AccountPayment = {
   currency: string;
   status: string;
   checkoutUrl?: string | null;
+};
+type CheckoutConfirmation = {
+  sessionId: string;
+  reference?: string;
 };
 type CheckoutBusiness = {
   subscription?: {
@@ -26,37 +30,47 @@ type CheckoutBusiness = {
     plan?: { code?: string; name: string };
   } | null;
 };
-const plans: Record<PlanCode, {
+export const checkoutPlans: Record<PlanCode, {
   name: string;
   subtitle: string;
-  monthlyPrice: number | null;
-  yearlyPrice?: number;
+  monthlyPrice: number;
+  yearlyPrice: number;
   features: string[];
 }> = {
-  free: {
-    name: "Free",
-    subtitle: "สำหรับทดลองใช้",
-    monthlyPrice: 0,
-    features: ["สินค้า 30 รายการ", "ผู้ใช้ 1 คน", "รายงานพื้นฐาน", "สาขาเดียว"]
+  starter: {
+    name: "Starter",
+    subtitle: "ร้านเล็กที่เริ่มใช้จริง",
+    monthlyPrice: 399,
+    yearlyPrice: 3990,
+    features: ["สินค้า 200 รายการ", "ผู้ใช้ 2 คน", "1 สาขา", "1 คลัง", "POS และ Stock Count พื้นฐาน"]
   },
-  pro: {
-    name: "Pro",
-    subtitle: "สำหรับบัญชีที่ใช้งานจริง",
-    monthlyPrice: 590,
-    yearlyPrice: 5900,
-    features: ["สินค้า 1,000 รายการ", "ผู้ใช้ 5 คน", "สูงสุด 5 สาขา", "POS และ barcode", "รายงานยอดขาย"]
+  professional: {
+    name: "Professional",
+    subtitle: "ร้านเดียวที่บริหารจริงจัง",
+    monthlyPrice: 899,
+    yearlyPrice: 8990,
+    features: ["สินค้า 1,500 รายการ", "ผู้ใช้ 6 คน", "1 สาขา", "2 คลัง", "รายงานเต็มและ approval"]
   },
-  premium: {
-    name: "Premium",
-    subtitle: "สำหรับบัญชีที่ต้องการหลายฟีเจอร์หรือหลายสาขา",
-    monthlyPrice: null,
-    features: ["หลายสาขา", "รายงานขั้นสูง", "สิทธิ์พนักงานละเอียด", "คุยรายละเอียดก่อนเปิดใช้งาน"]
+  multi_branch: {
+    name: "Multi-Branch",
+    subtitle: "ร้านที่เริ่มขยายหลายสาขา",
+    monthlyPrice: 1790,
+    yearlyPrice: 17900,
+    features: ["สินค้า 3,000 รายการ", "ผู้ใช้ 12 คน", "2 สาขา", "4 คลัง", "โอนสินค้าและรายงานแยกสาขา"]
   }
 };
 
-function planFromParam(value: string | null): PlanCode {
-  if (value === "premium" || value === "free" || value === "pro") return value;
-  return "pro";
+export function planFromParam(value: string | null): PlanCode {
+  const normalized = value?.trim().toLowerCase().replace(/-/g, "_");
+  if (normalized === "free") return "starter";
+  if (normalized === "pro") return "professional";
+  if (normalized === "premium") return "multi_branch";
+  if (normalized === "starter" || normalized === "professional" || normalized === "multi_branch") return normalized;
+  return "professional";
+}
+
+function apiPlanCode(planCode: PlanCode) {
+  return planCode.toUpperCase();
 }
 
 export function checkoutModeFromParam(value: string | null): CheckoutMode {
@@ -75,12 +89,22 @@ export function checkoutSummaryLabel(mode: CheckoutMode) {
   return mode === "promptpay" ? "จ่าย PromptPay ใช้งาน 30 วัน" : "ชำระรายเดือนอัตโนมัติ";
 }
 
+export function checkoutConfirmationPayload(paymentStatus: string | null, sessionId: string | null, reference: string | null): CheckoutConfirmation | undefined {
+  const normalizedSessionId = sessionId?.trim();
+  if (paymentStatus !== "success" || !normalizedSessionId) return undefined;
+  return {
+    sessionId: normalizedSessionId,
+    ...(reference?.trim() ? { reference: reference.trim() } : {})
+  };
+}
+
 export function CheckoutPage() {
   const [searchParams] = useSearchParams();
   const initialPlan = planFromParam(searchParams.get("plan"));
   const initialCheckoutMode = checkoutModeFromParam(searchParams.get("mode"));
   const paymentStatus = searchParams.get("payment");
   const returnedReference = searchParams.get("reference");
+  const returnedSessionId = searchParams.get("session_id");
   const planCode = initialPlan;
   const billingCycle = "monthly";
   const [checkoutMode, setCheckoutMode] = useState<CheckoutMode>(initialCheckoutMode);
@@ -94,10 +118,8 @@ export function CheckoutPage() {
     queryFn: () => api<CheckoutBusiness>("/businesses/current"),
     enabled: Boolean(session?.business)
   });
-  const plan = plans[planCode];
+  const plan = checkoutPlans[planCode];
   const amount = plan.monthlyPrice;
-  const isFree = amount === 0;
-  const needsContact = amount === null;
   const currentSubscription = business.data?.subscription;
   const currentPeriodEnd = currentSubscription?.currentPeriodEnd ?? currentSubscription?.expiresAt;
   const currentPlanCode = (currentSubscription?.plan?.code ?? currentSubscription?.plan?.name ?? "").toLowerCase();
@@ -107,12 +129,6 @@ export function CheckoutPage() {
     event.preventDefault();
     setSubmitError("");
 
-    if (needsContact) {
-      setSubmittedReference("");
-      setIsSubmitted(true);
-      return;
-    }
-
     if (!session) {
       setSubmitError("กรุณาสร้างบัญชีหรือเข้าสู่ระบบก่อนชำระเงิน เพื่อให้แพ็กเกจผูกกับบัญชีได้ถูกต้อง");
       return;
@@ -121,7 +137,7 @@ export function CheckoutPage() {
     setIsSubmitting(true);
     try {
       const payment = await post<AccountPayment>("/payments/checkout", {
-        planCode: planCode.toUpperCase(),
+        planCode: apiPlanCode(planCode),
         billingCycle,
         checkoutMode,
         provider: checkoutProviderForMode(checkoutMode),
@@ -144,6 +160,16 @@ export function CheckoutPage() {
     }
   }
 
+  if (paymentStatus === "success") {
+    const successParams = new URLSearchParams({
+      plan: planCode,
+      method: checkoutMode
+    });
+    if (returnedReference) successParams.set("reference", returnedReference);
+    if (returnedSessionId) successParams.set("session_id", returnedSessionId);
+    return <Navigate to={`/checkout/success?${successParams.toString()}`} replace />;
+  }
+
   if (isSubmitted) {
     return (
       <main className="mx-auto grid min-h-[72vh] max-w-3xl place-items-center px-5 py-12">
@@ -152,7 +178,7 @@ export function CheckoutPage() {
             <CheckCircle2 size={34} />
           </div>
           <p className="mt-5 text-sm font-black uppercase tracking-[0.18em] text-leaf">Payment Request</p>
-          <h1 className="mt-2 text-3xl font-black text-ink">{needsContact ? "ส่งคำขอ Premium แล้ว" : "สร้างรายการชำระเงินแล้ว"}</h1>
+          <h1 className="mt-2 text-3xl font-black text-ink">สร้างรายการชำระเงินแล้ว</h1>
           <p className="mx-auto mt-3 max-w-xl leading-7 text-stone-600">
             เลขอ้างอิง {submittedReference || "-"} ระบบจะรอการยืนยันเงินเข้า และอัปเดตแพ็กเกจให้บัญชีของคุณอัตโนมัติหลังรายการชำระเงินสำเร็จ
           </p>
@@ -184,11 +210,7 @@ export function CheckoutPage() {
             <p className="mt-4 leading-7 text-stone-600">แพ็กเกจเป็นสิทธิ์ที่ติดกับบัญชี เลือกได้ว่าจะสมัครแบบตัดบัตรอัตโนมัติหรือจ่ายรอบนี้ด้วย PromptPay QR</p>
           </div>
 
-          {paymentStatus === "success" ? (
-            <div className="mt-6 rounded-lg border border-teal-200 bg-teal-50 p-4 text-sm font-semibold leading-6 text-teal-900">
-              ชำระเงินผ่าน Stripe สำเร็จแล้ว{returnedReference ? ` เลขอ้างอิง ${returnedReference}` : ""} ระบบจะอัปเดตแพ็กเกจหลังได้รับ webhook จาก Stripe
-            </div>
-          ) : paymentStatus === "cancelled" ? (
+          {paymentStatus === "cancelled" ? (
             <div className="mt-6 rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm font-semibold leading-6 text-amber-900">
               ยกเลิกการชำระเงินแล้ว คุณสามารถลองชำระใหม่ได้จากหน้านี้
             </div>
@@ -203,7 +225,7 @@ export function CheckoutPage() {
                 <span className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2 text-sm font-black text-stone-700">รายเดือน</span>
               </div>
 
-              {!isFree && !needsContact ? (
+              {(
                 <div className="mt-5 grid gap-3 md:grid-cols-2">
                   <button
                     type="button"
@@ -224,19 +246,9 @@ export function CheckoutPage() {
                     <span className="mt-2 block text-sm font-semibold leading-6 text-stone-600">จ่ายรอบนี้ด้วยแอปธนาคาร แล้วเปิดแพ็กเกจหลัง Stripe ยืนยัน</span>
                   </button>
                 </div>
-              ) : null}
+              )}
 
-              {needsContact ? (
-                <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 p-4">
-                  <p className="font-black text-amber-900">Premium ต้องให้ทีมงานติดต่อกลับก่อนเปิดชำระเงิน</p>
-                  <p className="mt-1 text-sm leading-6 text-amber-800">ส่งข้อมูลบัญชีไว้ได้เลย ทีมงานจะคุยจำนวนสาขา ผู้ใช้ และรายงานที่ต้องการก่อนสรุปราคา</p>
-                </div>
-              ) : isFree ? (
-                <div className="mt-5 rounded-lg border border-teal-100 bg-teal-50 p-4">
-                  <p className="font-black text-leaf">Free ไม่ต้องชำระเงิน</p>
-                  <p className="mt-1 text-sm leading-6 text-teal-800">สร้างบัญชีแล้วเริ่มใช้งานแพ็กเกจฟรีได้ทันที</p>
-                </div>
-              ) : (
+              {(
                 <div className="mt-5 grid gap-4 md:grid-cols-[220px_1fr]">
                   <div className="grid aspect-square place-items-center rounded-lg border border-teal-100 bg-teal-50 p-4 text-center">
                     {checkoutMode === "promptpay" ? <QrCode className="mx-auto text-leaf" size={64} /> : <ShieldCheck className="mx-auto text-leaf" size={64} />}
@@ -263,15 +275,9 @@ export function CheckoutPage() {
               <Link to="/pricing">
                 <Button type="button" variant="secondary" className="w-full sm:w-auto">ยกเลิก</Button>
               </Link>
-              {isFree ? (
-                <Link to="/register">
-                  <Button type="button" className="w-full sm:w-auto">เริ่มใช้ฟรี</Button>
-                </Link>
-              ) : (
-                <Button type="submit" className="w-full sm:w-auto" icon={needsContact ? <Sparkles size={18} /> : <ShieldCheck size={18} />} disabled={isSubmitting}>
-                  {isSubmitting ? "กำลังพาไป Stripe..." : needsContact ? "ส่งข้อมูลให้ทีมติดต่อ" : isPromptPayToSubscription ? "ตั้งค่าบัตรสำหรับรอบถัดไป" : checkoutSubmitLabel(checkoutMode)}
-                </Button>
-              )}
+              <Button type="submit" className="w-full sm:w-auto" icon={<ShieldCheck size={18} />} disabled={isSubmitting}>
+                {isSubmitting ? "กำลังพาไป Stripe..." : isPromptPayToSubscription ? "ตั้งค่าบัตรสำหรับรอบถัดไป" : checkoutSubmitLabel(checkoutMode)}
+              </Button>
             </div>
           </form>
         </section>
@@ -293,7 +299,7 @@ export function CheckoutPage() {
             </ul>
             <div className="mt-5 rounded-lg bg-ink p-5 text-white">
               <p className="text-sm font-semibold text-white/70">ยอดรวม</p>
-	            <p className="mt-1 text-4xl font-black">{amount === null ? "คุยราคา" : isPromptPayToSubscription ? "฿0 วันนี้" : baht(amount)}</p>
+	            <p className="mt-1 text-4xl font-black">{isPromptPayToSubscription ? "฿0 วันนี้" : baht(amount)}</p>
 	            <p className="mt-1 text-sm font-semibold text-white/70">{isPromptPayToSubscription ? `เริ่มตัดรายเดือนหลัง ${thaiDate(currentPeriodEnd!)}` : checkoutSummaryLabel(checkoutMode)}</p>
             </div>
             <p className="mt-4 text-sm leading-6 text-stone-500">

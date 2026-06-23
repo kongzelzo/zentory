@@ -97,6 +97,8 @@ export class ProductDto {
   @IsString() @MinLength(1) name!: string;
   @IsString() @MinLength(1) sku!: string;
   @IsOptional() @IsString() barcode?: string;
+  @IsOptional() @IsString() @MinLength(1) variantColor?: string | null;
+  @IsOptional() @IsString() @MinLength(1) variantSize?: string | null;
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() warehouseId?: string;
   @IsOptional() @IsString() categoryName?: string;
@@ -111,9 +113,14 @@ export class ProductDto {
   @IsOptional() @ValidateNested() @Type(() => ProductReceiveNowDto) receiveNow?: ProductReceiveNowDto;
 }
 
+export class ProductBulkCategoryDto {
+  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) productIds!: string[];
+  @IsOptional() @IsString() categoryName?: string | null;
+}
+
 export class ProductVariantRowDto {
-  @IsString() @MinLength(1) color!: string;
-  @IsString() @MinLength(1) size!: string;
+  @IsOptional() @IsString() @MinLength(1) color?: string;
+  @IsOptional() @IsString() @MinLength(1) size?: string;
   @IsString() @MinLength(1) sku!: string;
   @IsOptional() @IsString() barcode?: string;
   @IsOptional() @IsNumber() @Min(0) costPrice?: number;
@@ -128,8 +135,8 @@ export class ProductVariantsDto {
   @IsString() @MinLength(1) skuPrefix!: string;
   @IsOptional() @IsString() branchId?: string;
   @IsString() @MinLength(1) warehouseId!: string;
-  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) colors!: string[];
-  @IsArray() @ArrayMinSize(1) @IsString({ each: true }) sizes!: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) colors?: string[];
+  @IsOptional() @IsArray() @IsString({ each: true }) sizes?: string[];
   @IsOptional() @IsString() categoryName?: string;
   @IsOptional() @IsString() brandName?: string;
   @IsOptional() @IsString() description?: string;
@@ -177,6 +184,23 @@ export class AdjustmentDto {
   @IsOptional() @IsEnum(["SET_ACTUAL", "INCREASE", "DECREASE"]) adjustmentMode?: "SET_ACTUAL" | "INCREASE" | "DECREASE";
   @IsOptional() @IsInt() @Min(0) targetQuantity?: number;
   @IsString() @IsNotEmpty() reason!: string;
+}
+
+export class AdjustmentRejectDto {
+  @IsOptional() @IsString() reason?: string;
+}
+
+export class AuditLogQueryDto {
+  @IsOptional() @IsString() entity?: string;
+  @IsOptional() @IsString() entityId?: string;
+  @IsOptional() @IsString() action?: string;
+  @IsOptional() @IsString() userId?: string;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) limit?: number = 50;
+  @IsOptional() @IsString() cursor?: string;
+}
+
+export class ExportQueryDto {
+  @IsOptional() @IsEnum(["products", "stock", "sales", "movements"]) type?: "products" | "stock" | "sales" | "movements";
 }
 
 export class StockCountCreateDto {
@@ -228,6 +252,7 @@ export class SaleListQueryDto {
   @IsOptional() @IsDateString() dateTo?: string;
   @IsOptional() @IsString() branchId?: string;
   @IsOptional() @IsString() warehouseId?: string;
+  @IsOptional() @IsString() allTime?: string;
   @IsOptional() @IsString() userId?: string;
   @IsOptional() @IsEnum(["CASH", "TRANSFER"]) paymentMethod?: "CASH" | "TRANSFER";
   @IsOptional() @IsEnum(["PAID", "VOID"]) status?: "PAID" | "VOID";
@@ -270,14 +295,26 @@ export class SubscriptionDto {
   @IsString() planCode!: string;
 }
 
+export class FreePlanSelectionDto {
+  @IsString() branchId!: string;
+  @IsOptional() @IsString() warehouseId?: string;
+}
+
+export class PlanLimitedSelectionDto extends FreePlanSelectionDto {}
+
 export class CheckoutPaymentDto {
-  @IsEnum(["PRO", "PREMIUM"]) planCode!: "PRO" | "PREMIUM";
+  @IsEnum(["STARTER", "PROFESSIONAL", "MULTI_BRANCH"]) planCode!: "STARTER" | "PROFESSIONAL" | "MULTI_BRANCH";
   @IsOptional() @IsEnum(["monthly", "yearly"]) billingCycle?: "monthly" | "yearly";
   @IsOptional() @IsEnum(["subscription", "promptpay"]) checkoutMode?: "subscription" | "promptpay";
   @IsOptional() @IsString() provider?: string;
   @IsOptional() @IsString() providerPaymentId?: string;
   @IsOptional() @IsString() checkoutUrl?: string;
   @IsOptional() @IsObject() metadata?: Record<string, unknown>;
+}
+
+export class ConfirmCheckoutDto {
+  @IsString() sessionId!: string;
+  @IsOptional() @IsString() reference?: string;
 }
 
 export class PaymentWebhookDto {

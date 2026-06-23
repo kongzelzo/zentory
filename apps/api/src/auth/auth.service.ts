@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Optional, Unauthori
 import { ConfigService } from "@nestjs/config";
 import { JwtService } from "@nestjs/jwt";
 import { RoleName } from "@prisma/client";
-import { normalizePermissionOverrides, resolveEffectivePermissions, type Role } from "@zentory/shared";
+import { planCatalog, normalizePermissionOverrides, resolveEffectivePermissions, resolvePlanCapabilities, type Role } from "@zentory/shared";
 import * as bcrypt from "bcryptjs";
 import { createHash, createPublicKey, randomBytes, verify } from "crypto";
 import { BusinessDto, ForgotPasswordDto, GoogleLoginDto, LoginDto, MembershipRequestDto, ProfileDto, RegisterDto, ResetPasswordDto } from "../common/dto";
@@ -175,7 +175,7 @@ export class AuthService {
         memberships: {
           where: { status: { in: ["ACTIVE", "PENDING", "REJECTED"] } },
           include: {
-            business: true,
+            business: { include: { subscription: { include: { plan: true } } } },
             requestedBranch: true,
             branchAssignments: { include: { branch: true } }
           },
@@ -185,6 +185,13 @@ export class AuthService {
     });
     const membership = user.memberships.find((item) => item.status === "ACTIVE");
     const membershipRequest = membership ? undefined : user.memberships.find((item) => item.status === "PENDING" || item.status === "REJECTED");
+    const planAccess = membership ? await this.sessionPlanAccess(membership.businessId, membership.id) : undefined;
+    const activeAssignedBranchIds = membership?.role === "OWNER"
+      ? []
+      : membership?.branchAssignments
+          .filter((assignment) => assignment.branch.status === "ACTIVE")
+          .map((assignment) => assignment.branchId)
+          .filter((branchId) => !planAccess?.isLimited || planAccess.allowedBranchIds.includes(branchId)) ?? [];
     return {
       id: user.id,
       email: user.email,
@@ -208,9 +215,25 @@ export class AuthService {
             branchCount: membership.business.branchCount,
             onboardingCompleted: membership.business.onboardingCompleted,
             onboardingProgress: this.normalizeProgress(membership.business.onboardingProgress),
-            assignedBranchIds: membership.role === "OWNER"
-              ? []
-              : membership.branchAssignments.filter((assignment) => assignment.branch.status === "ACTIVE").map((assignment) => assignment.branchId)
+            assignedBranchIds: activeAssignedBranchIds,
+            planAccess: planAccess
+              ? {
+                  status: planAccess.status,
+                  paymentMode: planAccess.paymentMode,
+                  isLimited: planAccess.isLimited,
+                  graceEndsAt: planAccess.graceEndsAt?.toISOString?.() ?? null,
+                  capabilities: planAccess.capabilities,
+                  allowedBranchIds: planAccess.allowedBranchIds,
+                  allowedWarehouseIds: planAccess.allowedWarehouseIds,
+                  memberLocked: planAccess.lockedMemberIds.includes(membership.id) || (membership.role !== "OWNER" && activeAssignedBranchIds.length === 0),
+                  lockedCounts: {
+                    branches: planAccess.lockedBranchIds.length,
+                    warehouses: planAccess.lockedWarehouseIds.length,
+                    members: planAccess.lockedMemberIds.length,
+                    products: planAccess.lockedProductCount
+                  }
+                }
+              : undefined
           }
         : undefined,
       membershipRequest: membershipRequest
@@ -251,7 +274,7 @@ export class AuthService {
     if (!dto.province?.trim()) throw new BadRequestException("Province is required");
     if (!dto.businessType?.trim()) throw new BadRequestException("Business type is required");
 
-    const freePlan = await this.ensurePlans();
+    const starterPlan = await this.ensurePlans();
     const business = await this.prisma.business.create({
       data: {
         name: dto.name.trim(),
@@ -268,7 +291,7 @@ export class AuthService {
             isDefault: true
           }
         },
-        subscription: { create: { planId: freePlan.id } },
+        subscription: { create: { planId: starterPlan.id, paymentMode: "FREE" } },
         members: { create: { userId, role: "OWNER" } }
       },
       include: { branches: true }
@@ -453,22 +476,171 @@ export class AuthService {
   }
 
   private async ensurePlans() {
-    const free = await this.prisma.subscriptionPlan.upsert({
-      where: { code: "FREE" },
-      create: { code: "FREE", name: "Free", productLimit: 30, userLimit: 1, branchLimit: 1, warehouseLimit: 1, priceMonthly: 0 },
-      update: { productLimit: 30, userLimit: 1, branchLimit: 1, warehouseLimit: 1, priceMonthly: 0 }
+    const planData = (code: keyof typeof planCatalog) => {
+      const plan = planCatalog[code];
+      return {
+        code: plan.code,
+        name: plan.name,
+        productLimit: plan.productLimit,
+        userLimit: plan.userLimit,
+        branchLimit: plan.branchLimit,
+        warehouseLimit: plan.warehouseLimit,
+        priceMonthly: plan.priceMonthly
+      };
+    };
+    const starter = await this.prisma.subscriptionPlan.upsert({
+      where: { code: "STARTER" },
+      create: planData("STARTER"),
+      update: planData("STARTER")
     });
     await this.prisma.subscriptionPlan.upsert({
-      where: { code: "PRO" },
-      create: { code: "PRO", name: "Pro", productLimit: 1000, userLimit: 5, branchLimit: 5, warehouseLimit: 3, priceMonthly: 590 },
-      update: { productLimit: 1000, userLimit: 5, branchLimit: 5, warehouseLimit: 3, priceMonthly: 590 }
+      where: { code: "PROFESSIONAL" },
+      create: planData("PROFESSIONAL"),
+      update: planData("PROFESSIONAL")
     });
     await this.prisma.subscriptionPlan.upsert({
-      where: { code: "PREMIUM" },
-      create: { code: "PREMIUM", name: "Premium", productLimit: 10000, userLimit: 25, branchLimit: 25, warehouseLimit: 25, priceMonthly: 0 },
-      update: { productLimit: 10000, userLimit: 25, branchLimit: 25, warehouseLimit: 25, priceMonthly: 0 }
+      where: { code: "MULTI_BRANCH" },
+      create: planData("MULTI_BRANCH"),
+      update: planData("MULTI_BRANCH")
     });
-    return free;
+    await this.moveLegacyPlanLinks([
+      { legacyCode: "FREE", targetCode: "STARTER", legacyName: "Legacy Free" },
+      { legacyCode: "PRO", targetCode: "PROFESSIONAL", legacyName: "Legacy Pro" },
+      { legacyCode: "PREMIUM", targetCode: "MULTI_BRANCH", legacyName: "Legacy Premium" }
+    ]);
+    return starter;
+  }
+
+  private async moveLegacyPlanLinks(links: { legacyCode: string; targetCode: string; legacyName: string }[]) {
+    for (const link of links) {
+      const [legacyPlan, targetPlan] = await Promise.all([
+        this.prisma.subscriptionPlan.findUnique({ where: { code: link.legacyCode } }),
+        this.prisma.subscriptionPlan.findUnique({ where: { code: link.targetCode } })
+      ]);
+      if (!legacyPlan || !targetPlan || legacyPlan.id === targetPlan.id) continue;
+
+      await this.prisma.businessSubscription.updateMany({
+        where: { planId: legacyPlan.id },
+        data: { planId: targetPlan.id }
+      });
+      const accountPaymentRequest = (this.prisma as any).accountPaymentRequest;
+      if (accountPaymentRequest?.updateMany) {
+        await accountPaymentRequest.updateMany({
+          where: { planId: legacyPlan.id },
+          data: { planId: targetPlan.id, planCode: targetPlan.code }
+        });
+      }
+      await this.prisma.subscriptionPlan.update({
+        where: { id: legacyPlan.id },
+        data: { name: link.legacyName, isActive: false }
+      });
+    }
+  }
+
+  private async sessionPlanAccess(businessId: string, currentMemberId: string) {
+    await this.expireSubscriptionForPlanAccess(businessId);
+    const subscription = await this.prisma.businessSubscription.findUnique({ where: { businessId }, include: { plan: true } });
+    const plan = subscription?.plan ?? await this.ensurePlans();
+    const [branches, warehouses, members, productCount] = await Promise.all([
+      this.prisma.branch.findMany({ where: { businessId }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
+      this.prisma.warehouse.findMany({ where: { businessId }, orderBy: [{ isDefault: "desc" }, { createdAt: "asc" }] }),
+      this.prisma.businessMember.findMany({ where: { businessId, status: "ACTIVE" }, orderBy: [{ role: "asc" }, { createdAt: "asc" }] }),
+      this.usedProductLimit(businessId)
+    ]);
+    const activeBranches = branches.filter((branch) => branch.status === "ACTIVE");
+    const selectedBranchId = (subscription as any)?.selectedFreeBranchId;
+    const branchCandidates = selectedBranchId
+      ? [...activeBranches.filter((branch) => branch.id === selectedBranchId), ...activeBranches.filter((branch) => branch.id !== selectedBranchId)]
+      : activeBranches;
+    const allowedBranchIds = branchCandidates.slice(0, plan.branchLimit).map((branch) => branch.id);
+    const activeWarehouses = warehouses.filter((warehouse) => warehouse.status === "ACTIVE" && allowedBranchIds.includes(warehouse.branchId));
+    const selectedWarehouseId = (subscription as any)?.selectedFreeWarehouseId;
+    const warehouseCandidates = selectedWarehouseId
+      ? [...activeWarehouses.filter((warehouse) => warehouse.id === selectedWarehouseId), ...activeWarehouses.filter((warehouse) => warehouse.id !== selectedWarehouseId)]
+      : activeWarehouses;
+    const allowedWarehouseIds = warehouseCandidates.slice(0, plan.warehouseLimit).map((warehouse) => warehouse.id);
+    const ownerMembers = members.filter((member) => member.role === "OWNER");
+    const nonOwnerMembers = members.filter((member) => member.role !== "OWNER");
+    const allowedMemberIds = new Set([...ownerMembers, ...nonOwnerMembers].slice(0, plan.userLimit).map((member) => member.id));
+    const lockedBranchIds = activeBranches.filter((branch) => !allowedBranchIds.includes(branch.id)).map((branch) => branch.id);
+    const lockedWarehouseIds = warehouses.filter((warehouse) => warehouse.status === "ACTIVE" && !allowedWarehouseIds.includes(warehouse.id)).map((warehouse) => warehouse.id);
+    const lockedMemberIds = members.filter((member) => !allowedMemberIds.has(member.id)).map((member) => member.id);
+    const lockedProductCount = Math.max(0, productCount - plan.productLimit);
+    const hasOverLimit = lockedBranchIds.length > 0 || lockedWarehouseIds.length > 0 || lockedMemberIds.length > 0 || lockedProductCount > 0;
+    const status = String(subscription?.status ?? "ACTIVE");
+    return {
+      status,
+      paymentMode: subscription?.paymentMode ?? "FREE",
+      graceEndsAt: (subscription as any)?.graceEndsAt ?? null,
+      isLimited: status === "LIMITED" || hasOverLimit,
+      capabilities: resolvePlanCapabilities(plan.code),
+      allowedBranchIds,
+      allowedWarehouseIds,
+      lockedBranchIds,
+      lockedWarehouseIds,
+      lockedMemberIds,
+      lockedProductCount
+    };
+  }
+
+  private async expireSubscriptionForPlanAccess(businessId: string) {
+    if (
+      !(this.prisma as any).businessSubscription?.findUnique ||
+      !(this.prisma as any).businessSubscription?.update ||
+      !(this.prisma as any).branch?.count ||
+      !(this.prisma as any).warehouse?.count ||
+      !(this.prisma as any).businessMember?.count ||
+      !(this.prisma as any).product?.findMany
+    ) {
+      return;
+    }
+    const subscription = await this.prisma.businessSubscription.findUnique({ where: { businessId }, include: { plan: true } });
+    if (!subscription) return;
+    const now = Date.now();
+    const promptPayExpired = subscription.paymentMode === "PROMPTPAY_ONE_TIME" && subscription.expiresAt && subscription.expiresAt.getTime() <= now;
+    const canceledSubscriptionExpired = subscription.paymentMode === "STRIPE_SUBSCRIPTION" && subscription.cancelAtPeriodEnd && subscription.currentPeriodEnd && subscription.currentPeriodEnd.getTime() <= now;
+    const pastDueGraceExpired = String(subscription.status) === "PAST_DUE" && (subscription as any).graceEndsAt && (subscription as any).graceEndsAt.getTime() <= now;
+    if (!promptPayExpired && !canceledSubscriptionExpired && !pastDueGraceExpired) return;
+
+    const starterPlan = await this.ensurePlans();
+    const nextStatus = await this.nextExpiredStatusForPlanAccess(businessId, starterPlan);
+    await this.prisma.businessSubscription.update({
+      where: { businessId },
+      data: {
+        planId: starterPlan.id,
+        status: nextStatus as any,
+        paymentMode: "FREE",
+        cancelAtPeriodEnd: false,
+        currentPeriodStart: null,
+        currentPeriodEnd: null,
+        graceEndsAt: null,
+        expiresAt: null,
+        stripeSubscriptionId: canceledSubscriptionExpired ? null : subscription.stripeSubscriptionId
+      } as any
+    });
+  }
+
+  private async nextExpiredStatusForPlanAccess(businessId: string, plan: { productLimit: number; userLimit: number; branchLimit: number; warehouseLimit: number }) {
+    const [branchCount, warehouseCount, memberCount, productCount] = await Promise.all([
+      this.prisma.branch.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.prisma.warehouse.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.prisma.businessMember.count({ where: { businessId, status: "ACTIVE" as any } }),
+      this.usedProductLimit(businessId)
+    ]);
+    return branchCount > plan.branchLimit || warehouseCount > plan.warehouseLimit || memberCount > plan.userLimit || productCount > plan.productLimit
+      ? "LIMITED"
+      : "EXPIRED";
+  }
+
+  private async usedProductLimit(businessId: string) {
+    const products = await this.prisma.product.findMany({
+      where: { businessId, status: { in: ["ACTIVE", "PAUSED", "DISCONTINUED"] as any } },
+      include: { balances: true }
+    });
+    return products.filter((product) => {
+      if (product.status === "ACTIVE" || product.status === "PAUSED") return true;
+      return product.balances.reduce((sum, balance) => sum + balance.quantity, 0) > 0;
+    }).length;
   }
 
   private hashResetToken(token: string) {

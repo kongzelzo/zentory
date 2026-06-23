@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildSalePayload, canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getPreferredWarehouseId, getSaleTotals, sanitizeCartQuantity, stockOf, type PosProduct } from "./pos";
+import { buildSalePayload, canAddToCart, findExactScannedProduct, getCartLineStockState, getCheckoutIssue, getPreferredWarehouseId, getSaleTotals, sanitizeCartQuantity, sortPosProductsForSale, stockOf, type PosProduct } from "./pos";
 
 function product(overrides: Partial<PosProduct> = {}): PosProduct {
   return {
@@ -32,6 +32,26 @@ describe("POS helpers", () => {
       ok: false,
       reason: "out-of-stock"
     });
+  });
+
+  it("sorts POS products with sellable stock before out-of-stock products", () => {
+    const products = [
+      product({ id: "out", name: "Out Shirt", sku: "SHIRT-OUT", balances: [{ warehouseId: "front", quantity: 0 }] }),
+      product({ id: "in", name: "Available Shirt", sku: "SHIRT-IN", balances: [{ warehouseId: "front", quantity: 4 }] }),
+      product({ id: "low", name: "Low Shirt", sku: "SHIRT-LOW", balances: [{ warehouseId: "front", quantity: 1 }] })
+    ];
+
+    expect(sortPosProductsForSale(products, "front").map((item) => item.id)).toEqual(["in", "low", "out"]);
+  });
+
+  it("uses search relevance before stock availability when POS search is active", () => {
+    const products = [
+      product({ id: "available-name-match", name: "Water Barcode", sku: "WATER-001", balances: [{ warehouseId: "front", quantity: 5 }] }),
+      product({ id: "exact-out", name: "Old Product", sku: "OLD-001", barcode: "BARCODE", balances: [{ warehouseId: "front", quantity: 0 }] }),
+      product({ id: "available-starts-with", name: "Other Product", sku: "BARCODE-002", balances: [{ warehouseId: "front", quantity: 3 }] })
+    ];
+
+    expect(sortPosProductsForSale(products, "front", "barcode").map((item) => item.id)).toEqual(["exact-out", "available-starts-with", "available-name-match"]);
   });
 
   it("counts and validates stock for the selected warehouse only", () => {
@@ -80,6 +100,8 @@ describe("POS helpers", () => {
     expect(getCheckoutIssue([{ ...product({ balances: [{ quantity: 1 }] }), quantity: 2 }])).toBe("stock-exceeded");
     expect(getCheckoutIssue(cart)).toBeUndefined();
     expect(getSaleTotals(cart, 80)).toEqual({ subtotal: 50, discount: 80, total: 0 });
+    expect(getSaleTotals(cart, 10, "PERCENT")).toEqual({ subtotal: 50, discount: 5, total: 45 });
+    expect(getSaleTotals(cart, 120, "PERCENT")).toEqual({ subtotal: 50, discount: 50, total: 0 });
   });
 
   it("validates checkout against the selected warehouse stock", () => {

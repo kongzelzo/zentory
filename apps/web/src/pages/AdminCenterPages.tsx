@@ -9,7 +9,7 @@ const adminPages = {
     subtitle: "ตรวจสถานะร้าน แพ็กเกจ ผู้ใช้งาน และการต่ออายุ",
     icon: Users,
     fields: ["ร้าน", "เจ้าของ", "แพ็กเกจ", "สถานะ"],
-    rows: [["ร้าน Demo Market", "owner@demo.test", "Free", "active", "/admin/customers/demo-market"], ["Coffee Lab", "coffee@example.com", "Pro", "active", "/admin/customers/coffee-lab"]]
+    rows: [["ร้าน Demo Market", "owner@demo.test", "Starter", "active", "/admin/customers/demo-market"], ["Coffee Lab", "coffee@example.com", "Professional", "active", "/admin/customers/coffee-lab"]]
   },
   users: {
     title: "ผู้ใช้ทั้งหมด",
@@ -20,17 +20,17 @@ const adminPages = {
   },
   plans: {
     title: "แพ็กเกจ",
-    subtitle: "กำหนดราคา limit และสถานะ Free / Pro / Premium",
+    subtitle: "กำหนดราคา limit และสถานะ Starter / Professional / Multi-Branch",
     icon: CreditCard,
     fields: ["แพ็กเกจ", "สินค้า", "ผู้ใช้", "ราคา"],
-    rows: [["Free", "30", "1", "฿0", "/admin/plans/free/edit"], ["Pro", "1,000", "5", "฿590", "/admin/plans/pro/edit"]]
+    rows: [["Starter", "200", "2", "฿399", "/admin/plans/starter/edit"], ["Professional", "1,500", "6", "฿899", "/admin/plans/professional/edit"], ["Multi-Branch", "3,000", "12", "฿1,790", "/admin/plans/multi-branch/edit"]]
   },
   payments: {
     title: "การชำระเงิน",
     subtitle: "ตรวจสลิป ต่ออายุ และประวัติ invoice",
     icon: CreditCard,
     fields: ["Invoice", "ร้าน", "ยอด", "สถานะ"],
-    rows: [["INV-2026-00001", "Coffee Lab", "฿590", "รอตรวจ", "/admin/payments/payment-001"]]
+    rows: [["INV-2026-00001", "Coffee Lab", "฿899", "รอตรวจ", "/admin/payments/payment-001"]]
   },
   "support-tickets": {
     title: "Support Tickets",
@@ -58,7 +58,7 @@ const adminPages = {
     subtitle: "เปิดปิดความสามารถรายร้านหรือทั้งระบบ",
     icon: Flag,
     fields: ["Flag", "ขอบเขต", "สถานะ", "หมายเหตุ"],
-    rows: [["new-pos", "ร้าน Pro", "on", "ทดลอง POS ใหม่", "/admin/feature-flags"]]
+    rows: [["new-pos", "ร้าน Professional", "on", "ทดลอง POS ใหม่", "/admin/feature-flags"]]
   },
   backups: {
     title: "Backups",

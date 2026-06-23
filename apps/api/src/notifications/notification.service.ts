@@ -121,7 +121,7 @@ export class NotificationService {
       }),
       (this.prisma as any).notificationRecipient.count({ where: { userId: user.userId, archivedAt: { not: null }, notification: { businessId: user.businessId, ...branchWhere } } })
     ]);
-    const openActionCount = liveCounts.transferRequestCount + liveCounts.transferReceiveCount + liveCounts.staffRequestCount + liveCounts.stockCountReviewCount;
+    const openActionCount = liveCounts.transferRequestCount + liveCounts.transferReceiveCount + liveCounts.staffRequestCount + liveCounts.stockCountReviewCount + liveCounts.stockAdjustmentRequestCount;
     const stockCount = liveCounts.outOfStockCount + liveCounts.lowStockCount;
     return {
       unreadCount,
@@ -134,6 +134,7 @@ export class NotificationService {
       transferReceiveCount: liveCounts.transferReceiveCount,
       staffRequestCount: liveCounts.staffRequestCount,
       stockCountReviewCount: liveCounts.stockCountReviewCount,
+      stockAdjustmentRequestCount: liveCounts.stockAdjustmentRequestCount,
       archivedCount,
       preview: preview.map((row: any) => this.serializeRecipient(row))
     };
@@ -206,7 +207,7 @@ export class NotificationService {
       severity: "WARNING",
       title: `คำขอโอน ${transfer.documentNo} รออนุมัติ`,
       body: `${transfer.sourceWarehouse.branch?.name ?? "ต้นทาง"} ไป ${transfer.destinationWarehouse.branch?.name ?? "ปลายทาง"}`,
-      actionHref: "/app/transfers?status=REQUESTED",
+      actionHref: "/app/activity-approvals",
       entityType: "StockTransfer",
       entityId: transfer.id,
       dedupeKey: `transfer-request:${transfer.id}`,
@@ -223,7 +224,7 @@ export class NotificationService {
       branchId: transfer.destinationWarehouse.branchId,
       type: "TRANSFER_REQUEST",
       severity: "WARNING",
-      title: `คำขอโอน ${transfer.documentNo} รอยืนยันรับสินค้า`,
+      title: `คำขอโอน ${transfer.documentNo} รอยืนยันรับของ`,
       body: `${transfer.sourceWarehouse.branch?.name ?? "ต้นทาง"} ไป ${transfer.destinationWarehouse.branch?.name ?? "ปลายทาง"}`,
       actionHref: "/app/transfers/requests",
       entityType: "StockTransfer",
@@ -321,6 +322,40 @@ export class NotificationService {
     await this.resolveNotification(businessId, `stock-count-review:${stockCountId}`);
   }
 
+  async createStockAdjustmentRequestNotification(businessId: string, adjustmentId: string) {
+    const adjustment = await (this.prisma as any).stockAdjustment.findFirst({
+      where: { id: adjustmentId, businessId },
+      include: {
+        warehouse: { include: { branch: true } },
+        product: { select: { name: true, sku: true } },
+        user: { select: { name: true } }
+      }
+    });
+    if (!adjustment || adjustment.status !== "PENDING") return;
+    const recipients = await this.transferManagerRecipientUserIds(businessId, adjustment.warehouse.branchId);
+    const recipientUserIds = recipients.filter((id) => id !== adjustment.userId);
+    const productName = adjustment.product?.name ?? adjustment.product?.sku ?? "สินค้า";
+    const quantity = Math.abs(adjustment.quantity ?? 0);
+    const direction = adjustment.quantity > 0 ? "ขอเพิ่มสต็อก" : "ขอลดสต็อก";
+    await this.upsertNotification({
+      businessId,
+      branchId: adjustment.warehouse.branchId,
+      type: "SYSTEM",
+      severity: "WARNING",
+      title: `${productName} ${direction} ${quantity}`,
+      body: `เลขที่ ${adjustment.documentNo} • ขอโดย ${adjustment.user?.name ?? "-"}`,
+      actionHref: "/app/activity-approvals",
+      entityType: "StockAdjustment",
+      entityId: adjustment.id,
+      dedupeKey: `stock-adjustment-request:${adjustment.id}`,
+      recipientUserIds: recipientUserIds.length > 0 ? recipientUserIds : recipients
+    });
+  }
+
+  async resolveStockAdjustmentRequestNotification(businessId: string, adjustmentId: string) {
+    await this.resolveNotification(businessId, `stock-adjustment-request:${adjustmentId}`);
+  }
+
   private async syncDerivedNotifications(user: CurrentUser, branchId?: string) {
     const member = await this.currentMember(user);
     if (!member) return;
@@ -330,7 +365,8 @@ export class NotificationService {
       this.syncStockAlerts(user.businessId!, member, branchIds),
       this.syncStaffRequests(user.businessId!, member, branchIds),
       this.syncTransferRequests(user.businessId!, member, branchIds),
-      this.syncStockCountReviews(user.businessId!, member, branchIds)
+      this.syncStockCountReviews(user.businessId!, member, branchIds),
+      this.syncStockAdjustmentRequests(user.businessId!, member, branchIds)
     ]);
   }
 
@@ -389,18 +425,32 @@ export class NotificationService {
     await Promise.all(counts.map((count: any) => this.createStockCountReviewNotification(businessId, count.id)));
   }
 
+  private async syncStockAdjustmentRequests(businessId: string, member: RecipientMember, branchIds?: string[]) {
+    if ((managerRank[member.role] ?? 0) < managerRank.MANAGER) return;
+    const adjustments = await (this.prisma as any).stockAdjustment?.findMany?.({
+      where: {
+        businessId,
+        status: "PENDING",
+        ...(branchIds ? { warehouse: { branchId: { in: branchIds } } } : {})
+      },
+      select: { id: true }
+    }) ?? [];
+    await Promise.all(adjustments.map((adjustment: any) => this.createStockAdjustmentRequestNotification(businessId, adjustment.id)));
+  }
+
   private async liveSummaryCounts(user: CurrentUser, branchId?: string) {
     const member = await this.currentMember(user);
-    if (!member) return { outOfStockCount: 0, lowStockCount: 0, transferRequestCount: 0, transferReceiveCount: 0, staffRequestCount: 0, stockCountReviewCount: 0 };
+    if (!member) return { outOfStockCount: 0, lowStockCount: 0, transferRequestCount: 0, transferReceiveCount: 0, staffRequestCount: 0, stockCountReviewCount: 0, stockAdjustmentRequestCount: 0 };
     const branchIds = branchId ? [branchId] : await this.accessibleBranchIds(user.businessId!, member);
-    const [stock, transferRequestCount, transferReceiveCount, staffRequestCount, stockCountReviewCount] = await Promise.all([
+    const [stock, transferRequestCount, transferReceiveCount, staffRequestCount, stockCountReviewCount, stockAdjustmentRequestCount] = await Promise.all([
       this.liveStockAlertCounts(user.businessId!, member, branchIds),
       this.liveTransferActionCount(user.businessId!, member, "REQUESTED", "source", branchIds),
       this.liveTransferActionCount(user.businessId!, member, "IN_TRANSIT", "destination", branchIds),
       this.liveStaffRequestCount(user.businessId!, member, branchIds),
-      this.liveStockCountReviewCount(user.businessId!, member, branchIds)
+      this.liveStockCountReviewCount(user.businessId!, member, branchIds),
+      this.liveStockAdjustmentRequestCount(user.businessId!, member, branchIds)
     ]);
-    return { ...stock, transferRequestCount, transferReceiveCount, staffRequestCount, stockCountReviewCount };
+    return { ...stock, transferRequestCount, transferReceiveCount, staffRequestCount, stockCountReviewCount, stockAdjustmentRequestCount };
   }
 
   private async liveStockAlertCounts(businessId: string, member: RecipientMember, branchIds?: string[]) {
@@ -485,10 +535,20 @@ export class NotificationService {
     });
   }
 
+  private liveStockAdjustmentRequestCount(businessId: string, member: RecipientMember, branchIds?: string[]) {
+    if ((managerRank[member.role] ?? 0) < managerRank.MANAGER) return Promise.resolve(0);
+    return (this.prisma as any).stockAdjustment?.count?.({
+      where: {
+        businessId,
+        status: "PENDING",
+        ...(branchIds ? { warehouse: { branchId: { in: branchIds } } } : {})
+      }
+    }) ?? Promise.resolve(0);
+  }
+
   private async upsertNotification(payload: NotificationPayload) {
     const recipientUserIds = Array.from(new Set(payload.recipientUserIds.filter(Boolean)));
     if (recipientUserIds.length === 0) return;
-    const now = new Date();
     const notification = payload.dedupeKey
       ? await (this.prisma as any).notification.upsert({
           where: { businessId_dedupeKey: { businessId: payload.businessId, dedupeKey: payload.dedupeKey } },
@@ -502,8 +562,7 @@ export class NotificationService {
             actionHref: payload.actionHref ?? null,
             entityType: payload.entityType ?? null,
             entityId: payload.entityId ?? null,
-            resolvedAt: null,
-            createdAt: now
+            resolvedAt: null
           }
         })
       : await (this.prisma as any).notification.create({ data: this.notificationCreateData(payload) });

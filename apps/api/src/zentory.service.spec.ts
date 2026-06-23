@@ -94,13 +94,67 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
+  it("creates color-only product variants without saving a placeholder size", async () => {
+    const createdProducts: any[] = [];
+    const tx: any = {
+      productGroup: {
+        create: jest.fn().mockResolvedValue({ id: "group_1" }),
+        findFirstOrThrow: jest.fn().mockImplementation(async () => ({ id: "group_1", name: "ขันตักน้ำ", products: createdProducts }))
+      },
+      product: {
+        create: jest.fn().mockImplementation(async ({ data }) => {
+          const product = { id: `product_${createdProducts.length + 1}`, ...data };
+          createdProducts.push(product);
+          return product;
+        })
+      },
+      inventoryBalance: { upsert: jest.fn().mockResolvedValue({ quantity: 0 }) },
+      stockReceipt: { create: jest.fn() },
+      stockMovement: { create: jest.fn() }
+    };
+    const prisma: any = {
+      businessSubscription: { findUnique: jest.fn().mockResolvedValue(null) },
+      product: { findMany: jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]) },
+      warehouse: {
+        findFirst: jest.fn().mockResolvedValue({ id: "warehouse_1", branchId: "branch_1", status: "ACTIVE", branch: { id: "branch_1", status: "ACTIVE" } })
+      },
+      $transaction: jest.fn((callback) => callback(tx))
+    };
+    const notifications = { refreshStockAlertsForProducts: jest.fn().mockResolvedValue(undefined) } as any;
+    const service = new ZentoryService(prisma, undefined as any, notifications);
+
+    await expect(service.createProductVariants(user, {
+      name: "ขันตักน้ำ",
+      skuPrefix: "SCOOP",
+      warehouseId: "warehouse_1",
+      colors: ["แดง", "น้ำเงิน"],
+      sizes: [],
+      unit: "ใบ",
+      costPrice: 12,
+      salePrice: 25,
+      minStock: 5,
+      variants: [
+        { color: "แดง", sku: "SCOOP-RED", receiveQuantity: 0 },
+        { color: "น้ำเงิน", sku: "SCOOP-BLUE", receiveQuantity: 0 }
+      ]
+    })).resolves.toMatchObject({
+      products: expect.arrayContaining([
+        expect.objectContaining({ sku: "SCOOP-RED", variantColor: "แดง", variantSize: null }),
+        expect.objectContaining({ sku: "SCOOP-BLUE", variantColor: "น้ำเงิน", variantSize: null })
+      ])
+    });
+
+    expect(tx.product.create).toHaveBeenCalledTimes(2);
+    expect(tx.stockReceipt.create).not.toHaveBeenCalled();
+  });
+
   it("creates warehouses with warehouse metadata", async () => {
     const prisma: any = {
       branch: {
         findFirst: jest.fn().mockResolvedValue({ id: "branch_main", status: "ACTIVE" })
       },
       businessSubscription: {
-        findUnique: jest.fn().mockResolvedValue({ plan: { name: "Pro", warehouseLimit: 3 } })
+        findUnique: jest.fn().mockResolvedValue({ plan: { name: "Professional", warehouseLimit: 3 } })
       },
       warehouse: {
         count: jest.fn().mockResolvedValue(1),
@@ -154,7 +208,7 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
         findFirst: jest.fn()
       },
       businessSubscription: {
-        findUnique: jest.fn().mockResolvedValue({ plan: { name: "Pro", warehouseLimit: 3 } })
+        findUnique: jest.fn().mockResolvedValue({ plan: { name: "Professional", warehouseLimit: 3 } })
       },
       warehouse: {
         count: jest.fn().mockResolvedValue(3),
@@ -167,7 +221,7 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
       name: "Overflow Warehouse",
       code: "wh-overflow",
       branchId: "branch_main"
-    })).rejects.toThrow("แพ็กเกจ Pro เพิ่มคลังได้สูงสุด 3 คลัง");
+    })).rejects.toThrow("แพ็กเกจ Professional เพิ่มคลังได้สูงสุด 3 คลัง");
 
     expect(prisma.branch.findFirst).not.toHaveBeenCalled();
     expect(prisma.warehouse.create).not.toHaveBeenCalled();
@@ -1360,6 +1414,114 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
     }));
   });
 
+  it("does not create a product audit log when saved data is unchanged", async () => {
+    const existingProduct = {
+      id: "product_1",
+      name: "Same name",
+      sku: "SKU-001",
+      barcode: "111",
+      description: "Same note",
+      unit: "ชิ้น",
+      costPrice: 5,
+      salePrice: 10,
+      minStock: 2,
+      categoryId: null,
+      brandId: null,
+      category: null,
+      brand: null,
+      balances: [],
+      movements: []
+    };
+    const prisma: any = {
+      product: {
+        findFirst: jest.fn().mockResolvedValue(existingProduct),
+        update: jest.fn().mockResolvedValue(existingProduct)
+      },
+      category: { upsert: jest.fn() },
+      brand: { upsert: jest.fn() },
+      auditLog: { create: jest.fn().mockResolvedValue({}) }
+    };
+    const service = new ZentoryService(prisma);
+
+    await service.updateProduct(user, "product_1", {
+      name: "Same name",
+      sku: "SKU-001",
+      barcode: "111",
+      description: "Same note",
+      unit: "ชิ้น",
+      costPrice: 5,
+      salePrice: 10,
+      minStock: 2
+    });
+
+    expect(prisma.product.update).toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("allows owners to list business audit logs", async () => {
+    const prisma: any = {
+      auditLog: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: "audit_1",
+            entity: "Product",
+            createdAt: new Date("2026-06-18T00:00:00.000Z"),
+            before: { name: "Old", sku: "OLD-001", passwordHash: "secret", rawPayload: { token: "token" } },
+            after: { name: "New", sku: "NEW-001", accessToken: "token", salePrice: 120 },
+            user: { id: "owner_1", name: "Owner", email: "owner@example.com" }
+          }
+        ])
+      },
+      stockMovement: { findMany: jest.fn().mockResolvedValue([]) }
+    };
+    const service = new ZentoryService(prisma);
+
+    const result = await service.listAuditLogs({ ...user, userId: "owner_1", role: "OWNER" }, { limit: 10 });
+
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ businessId: "business_1" })
+    }));
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].before).toEqual({ name: "Old", sku: "OLD-001" });
+    expect(result.items[0].after).toEqual({ name: "New", sku: "NEW-001", salePrice: 120 });
+  });
+
+  it("blocks non-owner roles from listing business audit logs", async () => {
+    const prisma: any = {
+      auditLog: { findMany: jest.fn() }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect(service.listAuditLogs({ ...user, role: "MANAGER" })).rejects.toThrow("Audit log is restricted to owners");
+    expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+  });
+
+  it("backfills stock balance before and after for legacy stock adjustment audit logs", async () => {
+    const prisma: any = {
+      auditLog: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: "audit_stock",
+            entity: "StockAdjustment",
+            createdAt: new Date("2026-06-19T00:00:00.000Z"),
+            before: null,
+            after: { documentNo: "ADJ-001", quantity: -1, targetQuantity: 9 },
+            user: null
+          }
+        ])
+      },
+      stockMovement: {
+        findMany: jest.fn().mockResolvedValue([{ reference: "ADJ-001", balanceBefore: 10, balanceAfter: 9 }])
+      }
+    };
+    const service = new ZentoryService(prisma);
+
+    const result = await service.listAuditLogs(user, { limit: 10 });
+
+    expect(result.items[0].before).toEqual({ stockOnHand: 10 });
+    expect(result.items[0].after).toEqual(expect.objectContaining({ documentNo: "ADJ-001", stockOnHand: 9 }));
+  });
+
   it("updates product lifecycle status through product edits without archiving", async () => {
     const prisma: any = {
       product: {
@@ -1618,10 +1780,13 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-06-14T10:00:00.000Z"));
     const prisma: any = {
       sale: {
-        findMany: jest.fn().mockResolvedValue([])
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { total: 0, discount: 0 } })
       },
       saleItem: {
-        findMany: jest.fn().mockResolvedValue([])
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { quantity: 0 } })
       }
     };
     const service = new ZentoryService(prisma);
@@ -1647,6 +1812,73 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
       }
     }));
     jest.useRealTimers();
+  });
+
+  it("calculates sales report totals from all matching sales instead of the recent row limit", async () => {
+    jest.useFakeTimers().setSystemTime(new Date("2026-06-14T10:00:00.000Z"));
+    const prisma: any = {
+      sale: {
+        findMany: jest.fn().mockResolvedValue([{
+          id: "sale_recent",
+          receiptNo: "SALE-RECENT",
+          createdAt: new Date("2026-06-14T09:00:00.000Z"),
+          total: 500,
+          discount: 20,
+          paymentMethod: "CASH",
+          branch: { id: "branch_1", name: "สาขาหลัก" },
+          warehouse: { id: "warehouse_1", name: "หน้าร้าน" },
+          user: { name: "Owner" },
+          items: [{ quantity: 2 }]
+        }]),
+        count: jest.fn().mockResolvedValue(350),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { total: 123456, discount: 789 } })
+      },
+      saleItem: {
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { quantity: 912 } })
+      }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect(service.salesReport(user, { branchId: "branch_1" })).resolves.toMatchObject({
+      summary: {
+        totalRevenue: 123456,
+        receiptCount: 350,
+        averageReceipt: 123456 / 350,
+        totalDiscount: 789,
+        totalUnits: 912
+      }
+    });
+    expect(prisma.sale.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 8 }));
+    expect(prisma.sale.count).toHaveBeenCalledWith({ where: expect.objectContaining({ branchId: "branch_1" }) });
+    expect(prisma.sale.aggregate).toHaveBeenCalledWith({ where: expect.objectContaining({ branchId: "branch_1" }), _sum: { total: true, discount: true } });
+    expect(prisma.saleItem.aggregate).toHaveBeenCalledWith({ where: { sale: expect.objectContaining({ branchId: "branch_1" }) }, _sum: { quantity: true } });
+    jest.useRealTimers();
+  });
+
+  it("accepts custom sales report date filters", async () => {
+    const prisma: any = {
+      sale: {
+        findMany: jest.fn().mockResolvedValue([]),
+        count: jest.fn().mockResolvedValue(0),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { total: 0, discount: 0 } })
+      },
+      saleItem: {
+        findMany: jest.fn().mockResolvedValue([]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { quantity: 0 } })
+      }
+    };
+    const service = new ZentoryService(prisma);
+
+    await service.salesReport(user, {
+      dateFrom: "2026-06-01T00:00:00.000Z",
+      dateTo: "2026-06-07T23:59:59.999Z"
+    });
+
+    expect(prisma.sale.findMany.mock.calls[0][0].where.createdAt).toEqual({
+      gte: new Date("2026-06-01T00:00:00.000Z"),
+      lte: new Date("2026-06-07T23:59:59.999Z")
+    });
   });
 
   it("paginates and filters sales history on the server", async () => {
@@ -1853,15 +2085,15 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
   it("updates dashboard sales targets", async () => {
     const prisma: any = {
       business: {
-        update: jest.fn().mockResolvedValue({ id: "business_1", salesTargetMode: "MONTHLY", monthlySalesTarget: 10000 })
+        update: jest.fn().mockResolvedValue({ id: "business_1", salesTargetMode: "MONTHLY", monthlySalesTarget: 15000 })
       }
     };
     const service = new ZentoryService(prisma);
 
-    await expect(service.updateDashboardGoals(user, { salesTargetMode: "MONTHLY", annualSalesTarget: null, monthlySalesTarget: 10000, dailySalesTarget: null })).resolves.toEqual(expect.objectContaining({ monthlySalesTarget: 10000 }));
+    await expect(service.updateDashboardGoals(user, { salesTargetMode: "MONTHLY", annualSalesTarget: null, monthlySalesTarget: 15000, dailySalesTarget: null })).resolves.toEqual(expect.objectContaining({ monthlySalesTarget: 15000 }));
     expect(prisma.business.update).toHaveBeenCalledWith({
       where: { id: "business_1" },
-      data: { salesTargetMode: "MONTHLY", annualSalesTarget: null, dailySalesTarget: null, monthlySalesTarget: 10000 }
+      data: { salesTargetMode: "MONTHLY", annualSalesTarget: null, dailySalesTarget: null, monthlySalesTarget: 15000 }
     });
   });
 
@@ -1881,7 +2113,7 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
       address: " 99 Main Road ",
       phone: " 080-000-0000 ",
       email: " ",
-      taxId: " 0100000000000 ",
+      taxId: " 0150000000000 ",
       logoUrl: " https://example.com/logo.png ",
       receiptFooter: " ขอบคุณที่ใช้บริการ ",
       currency: " thb ",
@@ -1898,7 +2130,7 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
         address: "99 Main Road",
         phone: "080-000-0000",
         email: null,
-        taxId: "0100000000000",
+        taxId: "0150000000000",
         logoUrl: "https://example.com/logo.png",
         receiptFooter: "ขอบคุณที่ใช้บริการ",
         currency: "THB",
@@ -2083,6 +2315,7 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
     const prisma: any = {
       branch: { findFirst: jest.fn().mockResolvedValue({ id: "branch_1", status: "ACTIVE" }), findFirstOrThrow: jest.fn().mockResolvedValue({ id: "branch_1" }) },
       warehouse: { findFirst: jest.fn().mockResolvedValue({ id: "warehouse_1", branchId: "branch_1", status: "ACTIVE", branch: { id: "branch_1" } }) },
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
       $transaction: jest.fn()
         .mockImplementationOnce((callback) => callback(receiptTx))
         .mockImplementationOnce((callback) => callback(adjustmentTx))
@@ -2091,6 +2324,12 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
 
     await expect(service.receive(user, { items: [{ productId: "product_1", quantity: 1, unitCost: 10 }] })).rejects.toThrow("Product is not available for this operation");
     await expect(service.adjust(user, { productId: "product_1", quantity: -1, reason: "clear stock" })).resolves.toEqual({ id: "adjustment_1", documentNo: "ADJ-TEST" });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        before: expect.objectContaining({ stockOnHand: 3 }),
+        after: expect.objectContaining({ stockOnHand: 2 })
+      })
+    }));
   });
 
   it("rejects sales for products that are not active", async () => {
@@ -2352,10 +2591,10 @@ describe("ZentoryService Phase 1 inventory behavior", () => {
 });
 
 describe("ZentoryService billing renewals", () => {
-  const freePlan = { id: "plan_free", code: "FREE", name: "Free", productLimit: 30, userLimit: 1, branchLimit: 1, warehouseLimit: 1, priceMonthly: 0, isActive: true };
-  const proPlan = { id: "plan_pro", code: "PRO", name: "Pro", productLimit: 1000, userLimit: 5, branchLimit: 5, warehouseLimit: 3, priceMonthly: 590, isActive: true };
+  const proPlan = { id: "plan_professional", code: "PROFESSIONAL", name: "Professional", productLimit: 1500, userLimit: 6, branchLimit: 1, warehouseLimit: 2, priceMonthly: 899, isActive: true };
+  const multiBranchPlan = { id: "plan_multi_branch", code: "MULTI_BRANCH", name: "Multi-Branch", productLimit: 3000, userLimit: 12, branchLimit: 2, warehouseLimit: 4, priceMonthly: 1790, isActive: true };
 
-  it("allows repeat checkout for an active Pro account", async () => {
+  it("allows repeat checkout for an active Professional account", async () => {
     const prisma: any = {
       businessSubscription: {
         findUnique: jest.fn()
@@ -2367,10 +2606,10 @@ describe("ZentoryService billing renewals", () => {
       accountPaymentRequest: {
         create: jest.fn().mockResolvedValue({
           id: "pay_1",
-          reference: "ZT-TEST-PRO-M",
-          planCode: "PRO",
+          reference: "ZT-TEST-PROFESSIONAL-M",
+          planCode: "PROFESSIONAL",
           billingCycle: "monthly",
-          amount: 590,
+          amount: 899,
           currency: "THB",
           status: "PENDING",
           provider: "manual",
@@ -2385,9 +2624,9 @@ describe("ZentoryService billing renewals", () => {
     const service = new ZentoryService(prisma);
 
     await expect(service.createAccountPaymentRequest(user, {
-      planCode: "PRO",
+      planCode: "PROFESSIONAL",
       provider: "manual"
-    })).resolves.toEqual(expect.objectContaining({ planCode: "PRO", amount: 590 }));
+    })).resolves.toEqual(expect.objectContaining({ planCode: "PROFESSIONAL", amount: 899 }));
 
     expect(prisma.accountPaymentRequest.create).toHaveBeenCalled();
   });
@@ -2395,9 +2634,9 @@ describe("ZentoryService billing renewals", () => {
   it("adds a trial when switching active PromptPay access to card subscription", async () => {
     jest.useFakeTimers().setSystemTime(new Date("2026-06-19T00:00:00.000Z"));
     const previousSecret = process.env.STRIPE_SECRET_KEY;
-    const previousPrice = process.env.STRIPE_PRO_MONTHLY_PRICE_ID;
+    const previousPrice = process.env.STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID;
     process.env.STRIPE_SECRET_KEY = "sk_test_123";
-    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = "price_pro_monthly";
+    process.env.STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID = "price_professional_monthly";
     const fetchMock = jest.spyOn(global, "fetch" as any).mockResolvedValue({
       ok: true,
       json: async () => ({ id: "cs_test_card", url: "https://checkout.stripe.test/card" })
@@ -2405,13 +2644,13 @@ describe("ZentoryService billing renewals", () => {
     const activePromptPaySubscription = { id: "sub_1", status: "ACTIVE", paymentMode: "PROMPTPAY_ONE_TIME", expiresAt: new Date("2026-07-19T00:00:00.000Z"), stripeCustomerId: "cus_1", plan: proPlan };
     const createdPayment = {
       id: "pay_1",
-      reference: "ZT-CARD-PRO-M",
+      reference: "ZT-CARD-PROFESSIONAL-M",
       userId: user.userId,
       businessId: user.businessId,
-      planId: "plan_pro",
-      planCode: "PRO",
+      planId: "plan_professional",
+      planCode: "PROFESSIONAL",
       billingCycle: "monthly",
-      amount: 590,
+      amount: 899,
       currency: "THB",
       status: "PENDING",
       provider: "stripe",
@@ -2440,7 +2679,7 @@ describe("ZentoryService billing renewals", () => {
     const service = new ZentoryService(prisma);
 
     await expect(service.createAccountPaymentRequest(user, {
-      planCode: "PRO",
+      planCode: "PROFESSIONAL",
       checkoutMode: "subscription"
     })).resolves.toEqual(expect.objectContaining({ checkoutUrl: "https://checkout.stripe.test/card" }));
 
@@ -2452,8 +2691,65 @@ describe("ZentoryService billing renewals", () => {
 
     fetchMock.mockRestore();
     process.env.STRIPE_SECRET_KEY = previousSecret;
-    process.env.STRIPE_PRO_MONTHLY_PRICE_ID = previousPrice;
+    process.env.STRIPE_PROFESSIONAL_MONTHLY_PRICE_ID = previousPrice;
     jest.useRealTimers();
+  });
+
+  it("creates Stripe checkout for the paid multi-branch launch plan", async () => {
+    const previousSecret = process.env.STRIPE_SECRET_KEY;
+    const previousPrice = process.env.STRIPE_MULTI_BRANCH_MONTHLY_PRICE_ID;
+    process.env.STRIPE_SECRET_KEY = "sk_test_123";
+    process.env.STRIPE_MULTI_BRANCH_MONTHLY_PRICE_ID = "price_multi_branch_monthly";
+    const fetchMock = jest.spyOn(global, "fetch" as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: "cs_multi_branch", url: "https://checkout.stripe.test/multi-branch" })
+    } as any);
+    const createdPayment = {
+      id: "pay_1",
+      reference: "ZT-MULTI-M",
+      userId: user.userId,
+      businessId: user.businessId,
+      planId: "plan_multi_branch",
+      planCode: "MULTI_BRANCH",
+      billingCycle: "monthly",
+      amount: 1790,
+      currency: "THB",
+      status: "PENDING",
+      provider: "stripe",
+      providerPaymentId: null,
+      checkoutUrl: null,
+      paidAt: null,
+      createdAt: new Date("2026-06-19T00:00:00.000Z"),
+      metadata: { checkoutMode: "subscription" },
+      plan: multiBranchPlan
+    };
+    const prisma: any = {
+      businessSubscription: {
+        findUnique: jest.fn().mockResolvedValue(null)
+      },
+      subscriptionPlan: {
+        findUnique: jest.fn().mockResolvedValue(multiBranchPlan)
+      },
+      accountPaymentRequest: {
+        create: jest.fn().mockResolvedValue(createdPayment),
+        update: jest.fn().mockResolvedValue({ ...createdPayment, providerPaymentId: "cs_multi_branch", stripeCheckoutSessionId: "cs_multi_branch", checkoutUrl: "https://checkout.stripe.test/multi-branch" })
+      }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect(service.createAccountPaymentRequest(user, {
+      planCode: "MULTI_BRANCH",
+      checkoutMode: "subscription"
+    })).resolves.toEqual(expect.objectContaining({ amount: 1790, checkoutUrl: "https://checkout.stripe.test/multi-branch" }));
+
+    const body = (fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.body as URLSearchParams;
+    expect(body.get("line_items[0][price]")).toBe("price_multi_branch_monthly");
+    expect(body.get("metadata[planCode]")).toBe("MULTI_BRANCH");
+    expect(body.get("success_url")).toBe("http://localhost:5173/checkout/success?plan=multi_branch&method=subscription&reference=ZT-MULTI-M&session_id={CHECKOUT_SESSION_ID}");
+
+    fetchMock.mockRestore();
+    process.env.STRIPE_SECRET_KEY = previousSecret;
+    process.env.STRIPE_MULTI_BRANCH_MONTHLY_PRICE_ID = previousPrice;
   });
 
   it("extends PromptPay access from the current expiry when paying the same plan again", async () => {
@@ -2462,14 +2758,14 @@ describe("ZentoryService billing renewals", () => {
     const expectedExpiry = new Date("2026-07-31T00:00:00.000Z");
     const payment = {
       id: "pay_1",
-      reference: "ZT-RENEW-PRO-M",
+      reference: "ZT-RENEW-PROFESSIONAL-M",
       userId: "user_1",
       businessId: "business_1",
-      planId: "plan_pro",
-      planCode: "PRO",
+      planId: "plan_professional",
+      planCode: "PROFESSIONAL",
       billingCycle: "monthly",
       checkoutMode: "promptpay",
-      amount: 590,
+      amount: 899,
       currency: "THB",
       status: "PENDING",
       provider: "stripe_promptpay",
@@ -2504,11 +2800,11 @@ describe("ZentoryService billing renewals", () => {
     const service = new ZentoryService(prisma);
 
     await expect(service.handlePaymentWebhook({
-      reference: "ZT-RENEW-PRO-M",
+      reference: "ZT-RENEW-PROFESSIONAL-M",
       status: "PAID",
       provider: "stripe_promptpay",
       providerPaymentId: "cs_test_renew",
-      amount: 590,
+      amount: 899,
       currency: "THB",
       metadata: { checkoutMode: "promptpay", stripeCheckoutSessionId: "cs_test_renew" }
     })).resolves.toEqual(expect.objectContaining({ status: "PAID" }));
@@ -2521,6 +2817,128 @@ describe("ZentoryService billing renewals", () => {
     }));
     expect(prisma.auditLog.create).toHaveBeenCalled();
     jest.useRealTimers();
+  });
+
+  it("confirms returned Stripe checkout and upgrades Professional to Multi-Branch before webhook delivery", async () => {
+    const previousSecret = process.env.STRIPE_SECRET_KEY;
+    process.env.STRIPE_SECRET_KEY = "sk_test_123";
+    const fetchMock = jest.spyOn(global, "fetch" as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "cs_multi_branch",
+          client_reference_id: "ZT-UPGRADE-MULTI-M",
+          payment_status: "paid",
+          subscription: "sub_multi_branch",
+          customer: "cus_1",
+          metadata: {
+            reference: "ZT-UPGRADE-MULTI-M",
+            checkoutMode: "subscription",
+            planCode: "MULTI_BRANCH",
+            businessId: "business_1"
+          }
+        })
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          id: "sub_multi_branch",
+          customer: "cus_1",
+          status: "active",
+          current_period_start: 1781827200,
+          current_period_end: 1784419200,
+          cancel_at_period_end: false
+        })
+      } as any);
+    const payment = {
+      id: "pay_1",
+      reference: "ZT-UPGRADE-MULTI-M",
+      userId: "user_1",
+      businessId: "business_1",
+      planId: "plan_multi_branch",
+      planCode: "MULTI_BRANCH",
+      billingCycle: "monthly",
+      checkoutMode: "subscription",
+      amount: 1790,
+      currency: "THB",
+      status: "PENDING",
+      provider: "stripe",
+      providerPaymentId: "cs_multi_branch",
+      stripeCheckoutSessionId: "cs_multi_branch",
+      stripePaymentIntentId: null,
+      failureReason: null,
+      checkoutUrl: "https://checkout.stripe.test/multi-branch",
+      paidAt: null,
+      metadata: { checkoutMode: "subscription" },
+      plan: multiBranchPlan
+    };
+    const prisma: any = {
+      accountPaymentRequest: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        update: jest.fn()
+      },
+      businessSubscription: {
+        findUnique: jest.fn().mockResolvedValue({ id: "sub_1", status: "ACTIVE", paymentMode: "STRIPE_SUBSCRIPTION", plan: proPlan, stripeCustomerId: "cus_1", stripeSubscriptionId: "sub_professional" }),
+        upsert: jest.fn()
+      },
+      auditLog: {
+        create: jest.fn()
+      },
+      $transaction: jest.fn(async (callback) => callback(prisma))
+    };
+    prisma.accountPaymentRequest.update.mockResolvedValue({
+      ...payment,
+      status: "PAID",
+      paidAt: new Date("2026-06-19T00:00:00.000Z")
+    });
+    const service = new ZentoryService(prisma);
+
+    await expect(service.confirmStripeCheckoutSession(user, {
+      sessionId: "cs_multi_branch",
+      reference: "ZT-UPGRADE-MULTI-M"
+    })).resolves.toEqual(expect.objectContaining({ status: "PAID" }));
+
+    expect(prisma.businessSubscription.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        planId: "plan_multi_branch",
+        paymentMode: "STRIPE_SUBSCRIPTION",
+        stripeSubscriptionId: "sub_multi_branch"
+      })
+    }));
+
+    fetchMock.mockRestore();
+    process.env.STRIPE_SECRET_KEY = previousSecret;
+  });
+
+  it("normalizes legacy admin plan codes before assigning subscriptions", async () => {
+    const prisma: any = {
+      subscriptionPlan: {
+        findUnique: jest.fn().mockResolvedValue(proPlan)
+      },
+      businessSubscription: {
+        upsert: jest.fn().mockResolvedValue({ id: "sub_1", planId: proPlan.id })
+      }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect(service.updateSubscription({ ...user, isSystemAdmin: true }, "business_1", "PRO")).resolves.toEqual(expect.objectContaining({ planId: proPlan.id }));
+
+    expect(prisma.subscriptionPlan.findUnique).toHaveBeenCalledWith({ where: { code: "PROFESSIONAL" } });
+    expect(prisma.businessSubscription.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({ planId: proPlan.id })
+    }));
+  });
+
+  it("rejects unknown admin plan codes", async () => {
+    const prisma: any = {
+      subscriptionPlan: { findUnique: jest.fn() },
+      businessSubscription: { upsert: jest.fn() }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect(service.updateSubscription({ ...user, isSystemAdmin: true }, "business_1", "ENTERPRISE")).rejects.toThrow("แพ็กเกจนี้ไม่พร้อมใช้งาน");
+    expect(prisma.subscriptionPlan.findUnique).not.toHaveBeenCalled();
+    expect(prisma.businessSubscription.upsert).not.toHaveBeenCalled();
   });
 });
 
@@ -2781,5 +3199,105 @@ describe("ZentoryService member branch access", () => {
 
     await expect(service.balances(staffUser, { warehouseId: "warehouse_other" })).rejects.toThrow("Branch is not assigned to this user");
     expect(prisma.inventoryBalance.findMany).not.toHaveBeenCalled();
+  });
+
+  it("expires an overdue paid plan before enforcing plan-locked warehouse writes", async () => {
+    const starterPlan = { id: "plan_starter", code: "STARTER", name: "Starter", productLimit: 200, userLimit: 2, branchLimit: 1, warehouseLimit: 1 };
+    const expiredProfessional = {
+      id: "sub_1",
+      businessId: "business_1",
+      plan: { code: "PROFESSIONAL", name: "Professional", productLimit: 1500, userLimit: 6, branchLimit: 1, warehouseLimit: 2 },
+      paymentMode: "PROMPTPAY_ONE_TIME",
+      status: "ACTIVE",
+      expiresAt: new Date(Date.now() - 1500),
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+      stripeSubscriptionId: null
+    };
+    const limitedStarter = {
+      ...expiredProfessional,
+      plan: starterPlan,
+      planId: starterPlan.id,
+      paymentMode: "FREE",
+      status: "LIMITED",
+      expiresAt: null
+    };
+    const prisma: any = {
+      subscriptionPlan: { findUniqueOrThrow: jest.fn().mockResolvedValue(starterPlan) },
+      businessSubscription: {
+        findUnique: jest.fn()
+          .mockResolvedValueOnce(expiredProfessional)
+          .mockResolvedValueOnce(limitedStarter),
+        update: jest.fn().mockResolvedValue(limitedStarter)
+      },
+      branch: {
+        count: jest.fn().mockResolvedValue(2),
+        findMany: jest.fn().mockResolvedValue([
+          { id: "branch_main", status: "ACTIVE", isDefault: true, createdAt: new Date("2026-01-01") },
+          { id: "branch_locked", status: "ACTIVE", isDefault: false, createdAt: new Date("2026-01-02") }
+        ])
+      },
+      warehouse: {
+        count: jest.fn().mockResolvedValue(2),
+        findMany: jest.fn().mockResolvedValue([
+          { id: "warehouse_main", branchId: "branch_main", status: "ACTIVE", isDefault: true, createdAt: new Date("2026-01-01") },
+          { id: "warehouse_locked", branchId: "branch_locked", status: "ACTIVE", isDefault: false, createdAt: new Date("2026-01-02") }
+        ])
+      },
+      businessMember: {
+        count: jest.fn().mockResolvedValue(1),
+        findMany: jest.fn().mockResolvedValue([{ id: "member_owner", role: "OWNER", status: "ACTIVE" }])
+      },
+      product: { findMany: jest.fn().mockResolvedValue([]) }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect((service as any).assertPlanWarehouseWriteAccess("business_1", "warehouse_locked")).rejects.toThrow("คลังนี้ถูกจำกัดตามแพ็กเกจ");
+    expect(prisma.businessSubscription.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { businessId: "business_1" },
+      data: expect.objectContaining({ planId: starterPlan.id, status: "LIMITED", paymentMode: "FREE" })
+    }));
+  });
+
+  it("enforces active plan limits when a migrated business has more branches or warehouses than the plan allows", async () => {
+    const professionalPlan = { code: "PROFESSIONAL", name: "Professional", productLimit: 1500, userLimit: 6, branchLimit: 1, warehouseLimit: 2 };
+    const activeProfessional = {
+      id: "sub_1",
+      businessId: "business_1",
+      plan: professionalPlan,
+      paymentMode: "FREE",
+      status: "ACTIVE",
+      expiresAt: null,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+      stripeSubscriptionId: null
+    };
+    const prisma: any = {
+      businessSubscription: {
+        findUnique: jest.fn().mockResolvedValue(activeProfessional),
+        update: jest.fn()
+      },
+      branch: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: "branch_main", status: "ACTIVE", isDefault: true, createdAt: new Date("2026-01-01") },
+          { id: "branch_locked", status: "ACTIVE", isDefault: false, createdAt: new Date("2026-01-02") }
+        ])
+      },
+      warehouse: {
+        findMany: jest.fn().mockResolvedValue([
+          { id: "warehouse_main", branchId: "branch_main", status: "ACTIVE", isDefault: true, createdAt: new Date("2026-01-01") },
+          { id: "warehouse_second", branchId: "branch_main", status: "ACTIVE", isDefault: false, createdAt: new Date("2026-01-02") },
+          { id: "warehouse_locked", branchId: "branch_locked", status: "ACTIVE", isDefault: false, createdAt: new Date("2026-01-03") }
+        ])
+      },
+      businessMember: {
+        findMany: jest.fn().mockResolvedValue([{ id: "member_owner", role: "OWNER", status: "ACTIVE" }])
+      },
+      product: { findMany: jest.fn().mockResolvedValue([]) }
+    };
+    const service = new ZentoryService(prisma);
+
+    await expect((service as any).assertPlanWarehouseWriteAccess("business_1", "warehouse_locked")).rejects.toThrow("คลังนี้ถูกจำกัดตามแพ็กเกจ");
+    expect(prisma.businessSubscription.update).not.toHaveBeenCalled();
   });
 });

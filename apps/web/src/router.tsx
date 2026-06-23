@@ -7,17 +7,20 @@ import { AdminShell } from "./components/AdminShell";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { PublicLayout } from "./components/PublicLayout";
 import { AdminPage } from "./pages/AdminPage";
+import { AdjustmentApprovalsPage } from "./pages/AdjustmentApprovalsPage";
+import { AuditLogPage } from "./pages/AuditLogPage";
 import { CashierDashboardPage, DashboardRedirectPage, OwnerDashboardPage, StockDashboardPage, ViewerDashboardPage } from "./pages/DashboardPage";
 import { InventoryAdjustmentPage, InventoryReceiptPage } from "./pages/InventoryPages";
 import { InventoryMovementPage } from "./pages/InventoryMovementPage";
 import { LandingPage } from "./pages/LandingPage";
 import { ForgotPasswordPage, LoginPage, RegisterPage, ResetPasswordPage } from "./pages/AuthPages";
 import { AccountSetupPage, JoinOrCreatePage, JoinRequestPendingPage, JoinRequestRejectedPage, JoinStorePage } from "./pages/JoinStorePages";
-import { BarcodePage, BillingPage, ImportExportPage, OperationPage, SupportPage } from "./pages/OperationsPages";
+import { BarcodePage, BillingPage, ImportExportPage, OperationPage, PlanLimitedPage, SupportPage } from "./pages/OperationsPages";
 import { BranchSettingsPage } from "./pages/BranchSettingsPage";
 import { BranchEditPage, BranchesPage, WarehouseDetailPage, WarehousesPage } from "./pages/BranchesPage";
 import { CategoriesPage } from "./pages/CategoriesPage";
 import { CheckoutPage } from "./pages/CheckoutPage";
+import { CheckoutSuccessPage } from "./pages/CheckoutSuccessPage";
 import { OnboardingPage } from "./pages/OnboardingPage";
 import { NotificationsPage } from "./pages/NotificationsPage";
 import { PosPage } from "./pages/PosPage";
@@ -43,6 +46,7 @@ export const router = createBrowserRouter([
       { path: "/", element: <LandingPage /> },
       { path: "/pricing", element: <PricingPage /> },
       { path: "/checkout", element: <CheckoutPage /> },
+      { path: "/checkout/success", element: <CheckoutSuccessPage /> },
       { path: "/login", element: <LoginPage /> },
       { path: "/forgot-password", element: <ForgotPasswordPage /> },
       { path: "/reset-password", element: <ResetPasswordPage /> },
@@ -71,6 +75,7 @@ export const router = createBrowserRouter([
           { path: "dashboard/stock", element: <StockDashboardPage /> },
           { path: "dashboard/viewer", element: <ViewerDashboardPage /> },
           { path: "onboarding", element: <OnboardingPage /> },
+          { path: "plan-limited", element: <PlanLimitedPage /> },
           { path: "pos", element: <PosPage /> },
           { path: "sales", element: <SalesPage /> },
           { path: "sales/:id", element: <SaleDetailPage /> },
@@ -91,7 +96,7 @@ export const router = createBrowserRouter([
           { path: "customers", element: <OperationPage kind="customers" /> },
           { path: "barcode", element: <BarcodePage /> },
           { path: "import-export", element: <ImportExportPage /> },
-          { path: "audit-log", element: <OperationPage kind="audit-log" /> },
+          { path: "audit-log", element: <AuditLogPage /> },
           { path: "transfers", element: <TransfersPage /> },
           { path: "transfers/requests", element: <TransferRequestsPage /> },
           { path: "branches", element: <BranchesPage /> },
@@ -110,7 +115,7 @@ export const router = createBrowserRouter([
           { path: "notifications/settings", element: <NotificationSettingsPage /> },
           { path: "notifications", element: <NotificationsPage /> },
           { path: "tax-invoices", element: <TaxInvoicesPage /> },
-          { path: "activity-approvals", element: <AdvancedOperationPage kind="activity-approvals" /> },
+          { path: "activity-approvals", element: <AdjustmentApprovalsPage /> },
           { path: "data-backup", element: <DataBackupPage /> },
           { path: "api-keys", element: <ApiKeysPage /> },
           { path: "support", element: <SupportPage /> },
@@ -142,7 +147,7 @@ export const router = createBrowserRouter([
           { path: "system-logs", element: <AdminCenterPage kind="system-logs" /> },
           { path: "feature-flags", element: <AdminCenterPage kind="feature-flags" /> },
           { path: "backups", element: <AdminCenterPage kind="backups" /> },
-          { path: "audit-log", element: <AdminCenterPage kind="audit-log" /> },
+          { path: "audit-log", element: <AuditLogPage /> },
           { path: "error-monitoring", element: <AdminCenterPage kind="error-monitoring" /> },
           { path: "email-templates", element: <AdminCenterPage kind="email-templates" /> }
         ]

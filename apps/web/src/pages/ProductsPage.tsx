@@ -109,7 +109,7 @@ type ProductVariantsCreatePayload = {
   minStock: number;
   receiveSupplier?: string;
   receiveNote?: string;
-  variants: Array<Omit<ProductVariantDraftRow, "id" | "barcode"> & { barcode?: string }>;
+  variants: Array<Omit<ProductVariantDraftRow, "id" | "barcode" | "color" | "size"> & { color?: string; size?: string; barcode?: string }>;
 };
 
 type ProductVariantsCreateSummary = ProductVariantsCreatePayload & {
@@ -295,6 +295,10 @@ function variantDraftKey(color: string, size: string) {
   return `${color.trim().toLowerCase()}\u0000${size.trim().toLowerCase()}`;
 }
 
+function variantDimensionOptions(values: string[]) {
+  return values.length > 0 ? values : [""];
+}
+
 function buildVariantDraftRows(options: {
   colors: string[];
   sizes: string[];
@@ -305,7 +309,7 @@ function buildVariantDraftRows(options: {
   previousRows: ProductVariantDraftRow[];
 }) {
   const previousByKey = new Map(options.previousRows.map((row) => [variantDraftKey(row.color, row.size), row]));
-  return options.colors.flatMap((color) => options.sizes.map((size) => {
+  return variantDimensionOptions(options.colors).flatMap((color) => variantDimensionOptions(options.sizes).map((size) => {
     const previous = previousByKey.get(variantDraftKey(color, size));
     return previous ?? {
       id: crypto.randomUUID(),
@@ -1178,7 +1182,7 @@ export function ProductFormPage() {
     const minStock = numberValue(form, "minStock");
     const colors = parseVariantValues(variantColorsInput);
     const sizes = parseVariantValues(variantSizesInput);
-    if (!skuPrefix || colors.length === 0 || sizes.length === 0 || !Number.isFinite(costPrice) || !Number.isFinite(salePrice) || !Number.isFinite(minStock)) return [];
+    if (!skuPrefix || (colors.length === 0 && sizes.length === 0) || !Number.isFinite(costPrice) || !Number.isFinite(salePrice) || !Number.isFinite(minStock)) return [];
     return buildVariantDraftRows({ colors, sizes, skuPrefix, costPrice, salePrice, minStock, previousRows });
   }
 
@@ -1187,7 +1191,7 @@ export function ProductFormPage() {
     if (!form) return;
     const rows = buildVariantRowsFromForm(form);
     if (rows.length === 0) {
-      setError("กรุณากรอก SKU prefix, สี, ไซส์, ราคา และจุดแจ้งเตือนก่อนสร้างตาราง");
+      setError("กรุณากรอก SKU prefix, สีหรือไซส์, ราคา และจุดแจ้งเตือนก่อนสร้างตาราง");
       return;
     }
     setError("");
@@ -1284,12 +1288,12 @@ export function ProductFormPage() {
     if (isVariantMode) {
       const colors = parseVariantValues(variantColorsInput);
       const sizes = parseVariantValues(variantSizesInput);
-      if (colors.length === 0 || sizes.length === 0) {
-        setError("กรุณาระบุสีและไซส์อย่างน้อยอย่างละ 1 ค่า");
+      if (colors.length === 0 && sizes.length === 0) {
+        setError("กรุณาระบุสีหรือไซส์อย่างน้อย 1 ค่า");
         return;
       }
       const rows = buildVariantRowsFromForm(form);
-      if (rows.length !== colors.length * sizes.length) {
+      if (rows.length !== variantDimensionOptions(colors).length * variantDimensionOptions(sizes).length) {
         setError("กรุณาสร้างตาราง variant ให้ครบก่อนบันทึก");
         return;
       }
@@ -1332,8 +1336,10 @@ export function ProductFormPage() {
         minStock,
         receiveSupplier: shouldReceiveNow ? textValue(form, "receiveSupplier") : undefined,
         receiveNote: shouldReceiveNow ? textValue(form, "receiveNote") : undefined,
-        variants: rows.map(({ id: _id, barcode, receiveQuantity: rowReceiveQuantity, ...row }) => ({
+        variants: rows.map(({ id: _id, barcode, receiveQuantity: rowReceiveQuantity, color, size, ...row }) => ({
           ...row,
+          color: color.trim() || undefined,
+          size: size.trim() || undefined,
           barcode: barcode.trim() || undefined,
           receiveQuantity: shouldReceiveNow ? rowReceiveQuantity : 0
         }))
@@ -1579,6 +1585,11 @@ export function ProductFormPage() {
     );
   }
 
+  const hasVariantColorRows = variantRows.some((row) => row.color.trim());
+  const hasVariantSizeRows = variantRows.some((row) => row.size.trim());
+  const pendingVariantHasColor = Boolean(pendingVariantGroup?.variants.some((row) => row.color?.trim()));
+  const pendingVariantHasSize = Boolean(pendingVariantGroup?.variants.some((row) => row.size?.trim()));
+
   return (
     <div className="max-w-6xl space-y-5">
       <BarcodeScanner
@@ -1619,7 +1630,7 @@ export function ProductFormPage() {
                   className={`rounded px-3 py-2 text-sm font-bold transition ${isVariantMode ? "bg-white text-ink shadow-sm" : "text-stone-600 hover:text-ink"}`}
                   onClick={() => setIsVariantMode(true)}
                 >
-                  หลายสี/ไซส์
+                  หลายตัวเลือก
                 </button>
               </div>
               <div className="grid gap-4 md:grid-cols-2">
@@ -1667,22 +1678,22 @@ export function ProductFormPage() {
             {isVariantMode ? (
               <section className="space-y-4 border-t border-stone-200 pt-5">
                 <div>
-                  <h2 className="text-lg font-black text-ink">สีและไซส์</h2>
-                  <p className="mt-1 text-sm text-stone-600">แยกหลายค่าด้วย comma หรือขึ้นบรรทัดใหม่ ระบบจะสร้าง SKU จาก prefix-สี-ไซส์</p>
+                  <h2 className="text-lg font-black text-ink">สี / ไซส์</h2>
+                  <p className="mt-1 text-sm text-stone-600">กรอกเฉพาะมิติที่สินค้านี้ใช้ แยกหลายค่าด้วย comma หรือขึ้นบรรทัดใหม่</p>
                 </div>
                 <div className="grid gap-4 md:grid-cols-2">
                   <label className="grid gap-1">
-                    <span className="text-sm font-semibold text-ink">สี *</span>
+                    <span className="text-sm font-semibold text-ink">สี</span>
                     <textarea className="field min-h-24" value={variantColorsInput} onChange={(event) => setVariantColorsInput(event.target.value)} placeholder="ดำ, ขาว, น้ำเงิน" />
                   </label>
                   <label className="grid gap-1">
-                    <span className="text-sm font-semibold text-ink">ไซส์ *</span>
+                    <span className="text-sm font-semibold text-ink">ไซส์</span>
                     <textarea className="field min-h-24" value={variantSizesInput} onChange={(event) => setVariantSizesInput(event.target.value)} placeholder="S, M, L, XL" />
                   </label>
                 </div>
                 <div className="flex flex-wrap items-center gap-3">
                   <Button type="button" variant="secondary" icon={<SlidersHorizontal size={16} />} onClick={refreshVariantRows}>
-                    สร้างตารางสี/ไซส์
+                    สร้างตารางตัวเลือก
                   </Button>
                   {variantRows.length > 0 ? <span className="text-sm font-semibold text-stone-500">{number(variantRows.length)} variants</span> : null}
                 </div>
@@ -1691,8 +1702,8 @@ export function ProductFormPage() {
                     <table className="min-w-[980px] w-full text-left text-sm">
                       <thead className="bg-stone-50 text-xs uppercase text-stone-500">
                         <tr>
-                          <th className="px-3 py-2">สี</th>
-                          <th className="px-3 py-2">ไซส์</th>
+                          {hasVariantColorRows ? <th className="px-3 py-2">สี</th> : null}
+                          {hasVariantSizeRows ? <th className="px-3 py-2">ไซส์</th> : null}
                           <th className="px-3 py-2">SKU</th>
                           <th className="px-3 py-2">Barcode</th>
                           <th className="px-3 py-2">ทุน</th>
@@ -1705,8 +1716,8 @@ export function ProductFormPage() {
                       <tbody>
                         {variantRows.map((row) => (
                           <tr key={row.id} className="border-t border-stone-100">
-                            <td className="px-3 py-2 font-semibold text-ink">{row.color}</td>
-                            <td className="px-3 py-2 font-semibold text-ink">{row.size}</td>
+                            {hasVariantColorRows ? <td className="px-3 py-2 font-semibold text-ink">{row.color}</td> : null}
+                            {hasVariantSizeRows ? <td className="px-3 py-2 font-semibold text-ink">{row.size}</td> : null}
                             <td className="px-3 py-2">
                               <input className="field min-w-44" value={row.sku} onChange={(event) => updateVariantRow(row.id, { sku: event.target.value })} />
                             </td>
@@ -1868,10 +1879,10 @@ export function ProductFormPage() {
 
       {pendingVariantGroup ? (
         <div className="fixed inset-0 z-50 grid place-items-center bg-ink/50 p-4" role="dialog" aria-modal="true" aria-labelledby="variant-confirm-title" onMouseDown={() => !isSubmitting && setPendingVariantGroup(null)}>
-          <div className="flex max-h-[90vh] w-full max-w-2xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
             <div className="flex items-start justify-between gap-4 border-b border-stone-200 p-5">
               <div>
-                <p className="text-xs font-black uppercase text-teal-700">ยืนยันสร้างสินค้าแบบหลายสี/ไซส์</p>
+                <p className="text-xs font-black uppercase text-teal-700">ยืนยันสร้างสินค้าแบบหลายตัวเลือก</p>
                 <h2 id="variant-confirm-title" className="mt-1 text-2xl font-black text-ink">{pendingVariantGroup.name}</h2>
                 <p className="mt-1 text-sm leading-6 text-stone-600">ระบบจะสร้าง {number(pendingVariantGroup.variants.length)} SKU ในกลุ่มเดียวกัน</p>
               </div>
@@ -1900,11 +1911,12 @@ export function ProductFormPage() {
                   <p className="mt-1 font-black text-ink">{number(pendingVariantGroup.variants.reduce((sum, row) => sum + row.receiveQuantity, 0))}</p>
                 </div>
               </div>
-              <div className="mt-4 max-h-80 overflow-auto rounded-md border border-stone-200">
-                <table className="min-w-[720px] w-full text-left text-sm">
+              <div className="mt-4 max-h-80 overflow-y-auto rounded-md border border-stone-200">
+                <table className="w-full table-fixed text-left text-sm">
                   <thead className="bg-stone-50 text-xs uppercase text-stone-500">
                     <tr>
-                      <th className="px-3 py-2">Variant</th>
+                      {pendingVariantHasColor ? <th className="px-3 py-2">สี</th> : null}
+                      {pendingVariantHasSize ? <th className="px-3 py-2">ไซส์</th> : null}
                       <th className="px-3 py-2">SKU</th>
                       <th className="px-3 py-2">Barcode</th>
                       <th className="px-3 py-2">ขาย</th>
@@ -1913,12 +1925,27 @@ export function ProductFormPage() {
                   </thead>
                   <tbody>
                     {pendingVariantGroup.variants.map((row) => (
-                      <tr key={`${row.color}-${row.size}`} className="border-t border-stone-100">
-                        <td className="px-3 py-2 font-semibold text-ink">{row.color} / {row.size}</td>
-                        <td className="px-3 py-2">{row.sku}</td>
-                        <td className="px-3 py-2">{row.barcode ?? "-"}</td>
-                        <td className="px-3 py-2">{baht(row.salePrice)}</td>
-                        <td className="px-3 py-2">{number(row.receiveQuantity)} {pendingVariantGroup.unit}</td>
+                      <tr key={`${row.color ?? ""}-${row.size ?? ""}-${row.sku}`} className="border-t border-stone-100">
+                        {pendingVariantHasColor ? (
+                          <td className="px-3 py-2 font-semibold text-ink">
+                            <span className="block truncate" title={row.color ?? ""}>{row.color}</span>
+                          </td>
+                        ) : null}
+                        {pendingVariantHasSize ? (
+                          <td className="px-3 py-2 font-semibold text-ink">
+                            <span className="block truncate" title={row.size ?? ""}>{row.size}</span>
+                          </td>
+                        ) : null}
+                        <td className="px-3 py-2">
+                          <span className="block truncate font-semibold text-stone-700" title={row.sku}>{row.sku}</span>
+                        </td>
+                        <td className="px-3 py-2">
+                          <span className="block truncate" title={row.barcode ?? "-"}>{row.barcode ?? "-"}</span>
+                        </td>
+                        <td className="px-3 py-2 font-semibold text-ink">{baht(row.salePrice)}</td>
+                        <td className="px-3 py-2">
+                          <span className="block truncate">{number(row.receiveQuantity)} {pendingVariantGroup.unit}</span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
